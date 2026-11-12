@@ -1,0 +1,8 @@
+{
+    "pd_mode": "mooncake",
+    "mooncake_master_args": "\"--port 50001 -eviction-high-watermark-ratio 0.9 -eviction-ratio 0.3 -enable-gc True\"",
+    "mooncake_prefill_config_path": "pd_configs/mooncake_prefill.json",
+    "mooncake_decode_config_path": "pd_configs/mooncake_decode.json",
+    "lmcache_nixl_recv_buffer_size_GB": 1,
+    "lmcache_nixl_send_buffer_size_GB": 1
+}

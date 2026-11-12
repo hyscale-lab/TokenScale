@@ -1,0 +1,302 @@
+From 57f067d2537c04b46563254bd0f833b338f537c2 Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Mon, 26 May 2025 05:53:22 +0000
+Subject: [PATCH] add logs in scheduler
+
+---
+ vllm/core/scheduler.py | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/vllm/core/scheduler.py b/vllm/core/scheduler.py
+index c3bc6becf..a5ddfadca 100644
+--- a/vllm/core/scheduler.py
++++ b/vllm/core/scheduler.py
+@@ -959,6 +959,7 @@ class Scheduler:
+             can_allocate = self.block_manager.can_allocate(
+                 seq_group, num_lookahead_slots=num_lookahead_slots)
+             if can_allocate == AllocStatus.LATER:
++                logger.info(f"Requests gets queued because block manager returns later, queue size: {len(waiting_queue)}")
+                 break
+             elif can_allocate == AllocStatus.NEVER:
+                 logger.warning(
+@@ -990,6 +991,7 @@ class Scheduler:
+                 # We've reached the budget limit - since there might be
+                 # continuous prefills in the running queue, we should break
+                 # to avoid scheduling any new prefills.
++                logger.info(f"Requests gets queued because num batched token budget is reached, queue size: {len(waiting_queue)}")
+                 break
+ 
+             num_new_seqs = seq_group.get_max_num_running_seqs()
+@@ -997,6 +999,7 @@ class Scheduler:
+                     num_new_tokens=num_new_tokens_uncached,
+                     num_new_seqs=num_new_seqs,
+             ):
++                logger.info(f"Requests gets queued because budget says it's cannot be scheduled, queue size: {len(waiting_queue)}")
+                 break
+ 
+             # Can schedule this request.
+-- 
+2.25.1
+
+From 9ef1b099c756764070e5bf99d805292832178345 Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Fri, 18 Apr 2025 11:26:49 +0800
+Subject: [PATCH] return metrics in the response
+
+---
+ vllm/entrypoints/openai/protocol.py           | 2 ++
+ vllm/entrypoints/openai/serving_completion.py | 4 ++++
+ 2 files changed, 6 insertions(+)
+
+diff --git a/vllm/entrypoints/openai/protocol.py b/vllm/entrypoints/openai/protocol.py
+index 14e41346d..8070537bd 100644
+--- a/vllm/entrypoints/openai/protocol.py
++++ b/vllm/entrypoints/openai/protocol.py
+@@ -16,6 +16,7 @@ from vllm.sampling_params import (BeamSearchParams, GuidedDecodingParams,
+                                   RequestOutputKind, SamplingParams)
+ from vllm.sequence import Logprob
+ from vllm.utils import random_uuid, resolve_obj_by_qualname
++from vllm.sequence import RequestMetrics
+ 
+ logger = init_logger(__name__)
+ 
+@@ -1022,6 +1023,7 @@ class CompletionResponse(OpenAIBaseModel):
+     model: str
+     choices: List[CompletionResponseChoice]
+     usage: UsageInfo
++    metrics_list: List[RequestMetrics]
+ 
+ 
+ class CompletionResponseStreamChoice(OpenAIBaseModel):
+diff --git a/vllm/entrypoints/openai/serving_completion.py b/vllm/entrypoints/openai/serving_completion.py
+index aaad7b8c7..be388211a 100644
+--- a/vllm/entrypoints/openai/serving_completion.py
++++ b/vllm/entrypoints/openai/serving_completion.py
+@@ -31,6 +31,7 @@ from vllm.sampling_params import BeamSearchParams, SamplingParams
+ from vllm.sequence import Logprob
+ from vllm.transformers_utils.tokenizer import AnyTokenizer
+ from vllm.utils import merge_async_iterators
++from vllm.sequence import RequestMetrics
+ 
+ logger = init_logger(__name__)
+ 
+@@ -397,7 +398,9 @@ class OpenAIServingCompletion(OpenAIServing):
+         num_prompt_tokens = 0
+         num_generated_tokens = 0
+ 
++        metrics_list: List[RequestMetrics]= []
+         for final_res in final_res_batch:
++            metrics_list.append(final_res.metrics)
+             prompt_token_ids = final_res.prompt_token_ids
+             assert prompt_token_ids is not None
+             prompt_logprobs = final_res.prompt_logprobs
+@@ -479,6 +482,7 @@ class OpenAIServingCompletion(OpenAIServing):
+             model=model_name,
+             choices=choices,
+             usage=usage,
++            metrics_list=metrics_list
+         )
+ 
+     def _create_completion_logprobs(
+-- 
+2.27.0
+
+From f2f6f913acb9250b988844a8c5b1ca6dc272bf02 Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Fri, 25 Apr 2025 13:23:18 +0100
+Subject: [PATCH] change info to debug
+
+---
+ vllm/entrypoints/logger.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/vllm/entrypoints/logger.py b/vllm/entrypoints/logger.py
+index 584ee0d9e..c692964c6 100644
+--- a/vllm/entrypoints/logger.py
++++ b/vllm/entrypoints/logger.py
+@@ -34,7 +34,7 @@ class RequestLogger:
+             if prompt_token_ids is not None:
+                 prompt_token_ids = prompt_token_ids[:max_log_len]
+ 
+-        logger.info(
++        logger.debug(
+             "Received request %s: prompt: %r, "
+             "params: %s, prompt_token_ids: %s, "
+             "lora_request: %s, prompt_adapter_request: %s.", request_id,
+-- 
+2.34.1From 34cc15d514ed515d26deca895caae1b45d746877 Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Fri, 23 May 2025 14:09:03 +0000
+Subject: [PATCH] change keep alive timeout
+
+---
+ vllm/entrypoints/openai/api_server.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/vllm/entrypoints/openai/api_server.py b/vllm/entrypoints/openai/api_server.py
+index 2e45b4742..df6bd2e78 100644
+--- a/vllm/entrypoints/openai/api_server.py
++++ b/vllm/entrypoints/openai/api_server.py
+@@ -71,7 +71,7 @@ from vllm.utils import (FlexibleArgumentParser, get_open_zmq_ipc_path,
+                         is_valid_ipv6_address, set_ulimit)
+ from vllm.version import __version__ as VLLM_VERSION
+ 
+-TIMEOUT_KEEP_ALIVE = 5  # seconds
++TIMEOUT_KEEP_ALIVE = 120  # seconds
+ 
+ prometheus_multiproc_dir: tempfile.TemporaryDirectory
+ 
+-- 
+2.25.1
+
+From 0b5bb3c56fd16abe08da3c1c54c67e34d0cae74b Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Tue, 25 Mar 2025 08:32:34 +0000
+Subject: [PATCH] feat: metrics
+
+---
+ .devcontainer/devcontainer.json | 23 +++++++++++++++++++++++
+ vllm/engine/llm_engine.py       | 14 ++++++++++----
+ vllm/engine/metrics.py          | 12 +++++++++++-
+ vllm/engine/metrics_types.py    |  1 +
+ 4 files changed, 45 insertions(+), 5 deletions(-)
+ create mode 100644 .devcontainer/devcontainer.json
+
+diff --git a/.devcontainer/devcontainer.json b/.devcontainer/devcontainer.json
+new file mode 100644
+index 0000000000000..fd24f34c3f9f9
+--- /dev/null
++++ b/.devcontainer/devcontainer.json
+@@ -0,0 +1,23 @@
++// For format details, see https://aka.ms/devcontainer.json. For config options, see the
++// README at: https://github.com/devcontainers/templates/tree/main/src/python
++{
++	"name": "Python 3",
++	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
++	"image": "mcr.microsoft.com/devcontainers/python:1-3.10-bookworm",
++	"runArgs": ["--gpus", "all"]
++
++	// Features to add to the dev container. More info: https://containers.dev/features.
++	// "features": {},
++
++	// Use 'forwardPorts' to make a list of ports inside the container available locally.
++	// "forwardPorts": [],
++
++	// Use 'postCreateCommand' to run commands after the container is created.
++	// "postCreateCommand": "pip3 install --user -r requirements.txt",
++
++	// Configure tool-specific properties.
++	// "customizations": {},
++
++	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
++	// "remoteUser": "root"
++}
+diff --git a/vllm/engine/llm_engine.py b/vllm/engine/llm_engine.py
+index 39f59e55da1f7..cb5ed2bd7611c 100644
+--- a/vllm/engine/llm_engine.py
++++ b/vllm/engine/llm_engine.py
+@@ -765,8 +765,8 @@ def add_request(
+                              "Priority scheduling is not enabled.")
+ 
+         if isinstance(params, SamplingParams) \
+-            and (params.guided_decoding or params.logits_processors) \
+-            and self.scheduler_config.num_scheduler_steps > 1:
++                and (params.guided_decoding or params.logits_processors) \
++                and self.scheduler_config.num_scheduler_steps > 1:
+             raise ValueError(
+                 "Guided decoding and logits processors are not supported "
+                 "in multi-step decoding")
+@@ -1032,7 +1032,7 @@ def _process_model_outputs(self,
+         outputs_by_sequence_group: List[List[SequenceGroupOutput]]
+         if has_multiple_outputs:
+             assert self.scheduler_config.is_multi_step or \
+-                     self.speculative_config
++                self.speculative_config
+             # Organize outputs by [step][sequence group] instead of
+             # [sequence group][step].
+             outputs_by_sequence_group = create_output_by_sequence_group(
+@@ -1223,7 +1223,7 @@ def _advance_to_next_step(
+         required if the worker is to perform async forward pass to next step.
+         """
+         for seq_group_metadata, sequence_group_outputs, scheduled_seq_group in \
+-            zip(seq_group_metadata_list, output, scheduled_seq_groups):
++                zip(seq_group_metadata_list, output, scheduled_seq_groups):
+             seq_group = scheduled_seq_group.seq_group
+ 
+             if seq_group.is_finished():
+@@ -1617,6 +1617,7 @@ def _get_stats(self,
+         time_inference_requests: List[float] = []
+         time_prefill_requests: List[float] = []
+         time_decode_requests: List[float] = []
++        time_per_output_tokens_requests: List[float] = []
+         time_in_queue_requests: List[float] = []
+         model_forward_time_requests: List[float] = []
+         model_execute_time_requests: List[float] = []
+@@ -1725,6 +1726,10 @@ def _get_stats(self,
+                             seq_group.metrics.first_scheduled_time)
+                         time_decode_requests.append(
+                             now - seq_group.metrics.first_token_time)
++                        time_per_output_tokens_requests.append(
++                            (now - seq_group.metrics.first_token_time) / sum(seq.get_output_len()
++                                                                             for seq in seq_group.get_finished_seqs())
++                        )
+                         time_inference_requests.append(
+                             now - seq_group.metrics.first_scheduled_time)
+                     if seq_group.metrics.time_in_queue is not None:
+@@ -1804,6 +1809,7 @@ def _get_stats(self,
+             time_inference_requests=time_inference_requests,
+             time_prefill_requests=time_prefill_requests,
+             time_decode_requests=time_decode_requests,
++            time_per_output_tokens_requests=time_per_output_tokens_requests,
+             time_in_queue_requests=time_in_queue_requests,
+             model_forward_time_requests=model_forward_time_requests,
+             model_execute_time_requests=model_execute_time_requests,
+diff --git a/vllm/engine/metrics.py b/vllm/engine/metrics.py
+index c8aec8dd3afa3..0a5c43e5bba7b 100644
+--- a/vllm/engine/metrics.py
++++ b/vllm/engine/metrics.py
+@@ -147,7 +147,7 @@ def __init__(self, labelnames: List[str], vllm_config: VllmConfig):
+         # Request stats
+         #   Latency
+         request_latency_buckets = [
+-            0.3, 0.5, 0.8, 1.0, 1.5, 2.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0,
++            0.25, 0.4, 0.5, 0.8, 1.0, 1.5, 2.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0,
+             40.0, 50.0, 60.0
+         ]
+         self.histogram_e2e_time_request = self._histogram_cls(
+@@ -179,6 +179,14 @@ def __init__(self, labelnames: List[str], vllm_config: VllmConfig):
+             "Histogram of time spent in DECODE phase for request.",
+             labelnames=labelnames,
+             buckets=request_latency_buckets)
++        self.histogram_time_per_output_token_request = self._histogram_cls(
++            name="vllm:request_time_per_output_token_seconds",
++            documentation="Histogram of time per output token for request.",
++            labelnames=labelnames,
++            buckets=[
++                0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.75,
++                1.0, 2.5
++            ])
+         self.histogram_time_in_queue_request = self._histogram_cls(
+             name="vllm:time_in_queue_requests",
+             documentation=
+@@ -610,6 +618,8 @@ def _log_prometheus(self, stats: Stats) -> None:
+                             stats.time_prefill_requests)
+         self._log_histogram(self.metrics.histogram_decode_time_request,
+                             stats.time_decode_requests)
++        self._log_histogram(self.metrics.histogram_time_per_output_token_request,
++                            stats.time_per_output_tokens_requests)
+         self._log_histogram(self.metrics.histogram_time_in_queue_request,
+                             stats.time_in_queue_requests)
+         self._log_histogram(self.metrics.histogram_model_forward_time_request,
+diff --git a/vllm/engine/metrics_types.py b/vllm/engine/metrics_types.py
+index 5c7a430d11c5a..08660fe44f48b 100644
+--- a/vllm/engine/metrics_types.py
++++ b/vllm/engine/metrics_types.py
+@@ -52,6 +52,7 @@ class Stats:
+     time_inference_requests: List[float]
+     time_prefill_requests: List[float]
+     time_decode_requests: List[float]
++    time_per_output_tokens_requests: List[float]
+     time_in_queue_requests: List[float]
+     model_forward_time_requests: List[float]
+     model_execute_time_requests: List[float]

@@ -1,0 +1,13 @@
+{
+    "router_port": 8889,
+    "router_prometheus_port": 9091,
+    "sif_images_path": "/scratch/users/ntu/$USER/sif_images",
+    "model_path": "/scratch/users/ntu/$USER/models",
+    "memory_pool_size": 32,
+    "log_path": "/scratch/users/ntu/$USER/logs",
+    "worker_port": 9000,
+    "wait_min": 65,
+    "nscc_nodes": 1,
+    "nscc_private_key_path": "/home/users/ntu/$USER/.ssh/id_rsa",
+    "conda_path": "/home/users/ntu/$USER/miniconda/envs/liquid"
+}

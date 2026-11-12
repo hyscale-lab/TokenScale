@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 1s
+  evaluation_interval: 1s 
+
+scrape_configs:
+  - job_name: 'liquid'
+    file_sd_configs:
+      - files:
+          - 'sd.json' 
+        refresh_interval: 1s

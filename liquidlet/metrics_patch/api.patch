@@ -1,0 +1,63 @@
+From 9ef1b099c756764070e5bf99d805292832178345 Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Fri, 18 Apr 2025 11:26:49 +0800
+Subject: [PATCH] return metrics in the response
+
+---
+ vllm/entrypoints/openai/protocol.py           | 2 ++
+ vllm/entrypoints/openai/serving_completion.py | 4 ++++
+ 2 files changed, 6 insertions(+)
+
+diff --git a/vllm/entrypoints/openai/protocol.py b/vllm/entrypoints/openai/protocol.py
+index 14e41346d..8070537bd 100644
+--- a/vllm/entrypoints/openai/protocol.py
++++ b/vllm/entrypoints/openai/protocol.py
+@@ -16,6 +16,7 @@ from vllm.sampling_params import (BeamSearchParams, GuidedDecodingParams,
+                                   RequestOutputKind, SamplingParams)
+ from vllm.sequence import Logprob
+ from vllm.utils import random_uuid, resolve_obj_by_qualname
++from vllm.sequence import RequestMetrics
+ 
+ logger = init_logger(__name__)
+ 
+@@ -1022,6 +1023,7 @@ class CompletionResponse(OpenAIBaseModel):
+     model: str
+     choices: List[CompletionResponseChoice]
+     usage: UsageInfo
++    metrics_list: List[RequestMetrics]
+ 
+ 
+ class CompletionResponseStreamChoice(OpenAIBaseModel):
+diff --git a/vllm/entrypoints/openai/serving_completion.py b/vllm/entrypoints/openai/serving_completion.py
+index aaad7b8c7..be388211a 100644
+--- a/vllm/entrypoints/openai/serving_completion.py
++++ b/vllm/entrypoints/openai/serving_completion.py
+@@ -31,6 +31,7 @@ from vllm.sampling_params import BeamSearchParams, SamplingParams
+ from vllm.sequence import Logprob
+ from vllm.transformers_utils.tokenizer import AnyTokenizer
+ from vllm.utils import merge_async_iterators
++from vllm.sequence import RequestMetrics
+ 
+ logger = init_logger(__name__)
+ 
+@@ -397,7 +398,9 @@ class OpenAIServingCompletion(OpenAIServing):
+         num_prompt_tokens = 0
+         num_generated_tokens = 0
+ 
++        metrics_list: List[RequestMetrics]= []
+         for final_res in final_res_batch:
++            metrics_list.append(final_res.metrics)
+             prompt_token_ids = final_res.prompt_token_ids
+             assert prompt_token_ids is not None
+             prompt_logprobs = final_res.prompt_logprobs
+@@ -479,6 +482,7 @@ class OpenAIServingCompletion(OpenAIServing):
+             model=model_name,
+             choices=choices,
+             usage=usage,
++            metrics_list=metrics_list
+         )
+ 
+     def _create_completion_logprobs(
+-- 
+2.27.0
+

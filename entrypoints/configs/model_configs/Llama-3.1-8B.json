@@ -1,0 +1,27 @@
+{
+  "model_name": "meta-llama/Llama-3.1-8B",
+  "cli": "vllm",
+  "env": ["VLLM_USE_V1=1",
+    "VLLM_NO_USAGE_STATS=1",
+    "VLLM_HTTP_TIMEOUT_KEEP_ALIVE=120",
+    "VLLM_KVC_MEM_GB=16",
+    "LMCACHE_TRACK_USAGE=false"
+  ],
+  "args": [
+    "serve",
+    "/models/meta-llama/Llama-3.1-8B",
+    "--load-format",
+    "serverless_llm",
+    "--served-model-name",
+    "meta-llama/Llama-3.1-8B",
+    "--enable-chunked-prefill",
+    "--max-num-batched-token",
+    "1024",
+    "--no-enable-prefix-caching",
+    "--enforce-eager"
+  ],
+  "tp_arg": "--tensor-parallel-size",
+  "host_arg": "--host",
+  "port_arg": "--port",
+  "autoscaler_config_path": "autoscale_configs/default_autoscale_config.json"
+}

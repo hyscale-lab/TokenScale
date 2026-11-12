@@ -1,0 +1,11 @@
+{
+    "type": "DEFAULT",
+    "tp_level": 1,
+    "target_metric": "req_counter",
+    "target_value": 33,
+    "min_instance": 3,
+    "max_instance": 3,
+    "min_life_time": 0,
+    "scale_down_to_zero_grace_period": 30,
+    "stabilization_window_seconds": 10
+}

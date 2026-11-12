@@ -1,0 +1,9 @@
+{
+    "project_root_path": "/home/users/ntu/$USER/proj/Liquid",
+    "config_dir_path": "test_configs",
+    "common_config_path": "common_configs/common_config.json",
+    "LLMLoadgen_config_path": "loadgen_configs/loadgen_config.json",
+    "model_config_path_list": [ 
+        "model_configs/Llama-3.1-8B.json"
+    ]
+}

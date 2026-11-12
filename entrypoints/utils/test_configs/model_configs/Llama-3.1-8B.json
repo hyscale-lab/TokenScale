@@ -1,0 +1,23 @@
+{
+  "model_name": "meta-llama/Llama-3.1-8B",
+  "cli": "vllm",
+  "env": [],
+  "args": [
+    "serve",
+    "/models/meta-llama/Llama-3.1-8B",
+    "--gpu-memory-utilization",
+    "0.9",
+    "--load-format",
+    "serverless_llm",
+    "--served-model-name",
+    "meta-llama/Llama-3.1-8B",
+    "--enable-chunked-prefill",
+    "True",
+    "--max-num-batched-token",
+    "1024"
+  ],
+  "tp_arg": "--tensor-parallel-size",
+  "host_arg": "--host",
+  "port_arg": "--port",
+  "autoscaler_config_path": "autoscale_configs/default_autoscale_config.json"
+}

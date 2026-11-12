@@ -1,0 +1,15 @@
+#!/bin/bash
+#PBS -l select=1:ngpus=1
+#PBS -l walltime=01:00:00
+#PBS -j oe
+#PBS -N convert_llama
+#PBS -o ./logs/convert_llama.log
+
+export CUDA_VISIBLE_DEVICES=0
+module load singularity
+module load cuda
+singularity exec --nv \
+  -B /scratch/users/ntu/$USER/models:/models \
+  /scratch/users/ntu/$USER/sif_images/save_model.sif \
+  python3 /app/save_model.py \
+  --model-name meta-llama/Llama-3.1-8B 

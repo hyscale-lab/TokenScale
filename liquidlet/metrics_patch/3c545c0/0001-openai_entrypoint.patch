@@ -1,0 +1,96 @@
+From 2d9da7023523ecb7df18a276616ecd36886dae67 Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Sat, 31 May 2025 12:41:56 +0000
+Subject: [PATCH 1/4] openai_entrypoint
+
+---
+ vllm/entrypoints/openai/api_server.py         | 2 ++
+ vllm/entrypoints/openai/protocol.py           | 4 +++-
+ vllm/entrypoints/openai/serving_completion.py | 7 +++++--
+ 3 files changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/vllm/entrypoints/openai/api_server.py b/vllm/entrypoints/openai/api_server.py
+index f3fd15486..514d072cc 100644
+--- a/vllm/entrypoints/openai/api_server.py
++++ b/vllm/entrypoints/openai/api_server.py
+@@ -106,6 +106,8 @@ from vllm.utils import (Device, FlexibleArgumentParser, get_open_zmq_ipc_path,
+ from vllm.v1.metrics.prometheus import get_prometheus_registry
+ from vllm.version import __version__ as VLLM_VERSION
+ 
++TIMEOUT_KEEP_ALIVE = 120  # seconds
++
+ prometheus_multiproc_dir: tempfile.TemporaryDirectory
+ 
+ # Cannot use __name__ (https://github.com/vllm-project/vllm/pull/4765)
+diff --git a/vllm/entrypoints/openai/protocol.py b/vllm/entrypoints/openai/protocol.py
+index 3b5281962..ae9609c6d 100644
+--- a/vllm/entrypoints/openai/protocol.py
++++ b/vllm/entrypoints/openai/protocol.py
+@@ -6,7 +6,7 @@
+ import json
+ import time
+ from http import HTTPStatus
+-from typing import Annotated, Any, ClassVar, Literal, Optional, Union
++from typing import Annotated, Any, ClassVar, Literal, Optional, Union, List
+ 
+ import regex as re
+ import torch
+@@ -24,6 +24,7 @@ from vllm.sampling_params import (BeamSearchParams, GuidedDecodingParams,
+                                   RequestOutputKind, SamplingParams)
+ from vllm.sequence import Logprob
+ from vllm.utils import random_uuid, resolve_obj_by_qualname
++from vllm.sequence import RequestMetrics
+ 
+ logger = init_logger(__name__)
+ 
+@@ -1278,6 +1279,7 @@ class CompletionResponse(OpenAIBaseModel):
+     model: str
+     choices: list[CompletionResponseChoice]
+     usage: UsageInfo
++    metrics_list: List[RequestMetrics]
+     kv_transfer_params: Optional[dict[str, Any]] = Field(
+         default=None, description="KVTransfer parameters.")
+ 
+diff --git a/vllm/entrypoints/openai/serving_completion.py b/vllm/entrypoints/openai/serving_completion.py
+index a19fde8d7..bbff5c029 100644
+--- a/vllm/entrypoints/openai/serving_completion.py
++++ b/vllm/entrypoints/openai/serving_completion.py
+@@ -5,7 +5,7 @@ import asyncio
+ import time
+ from collections.abc import AsyncGenerator, AsyncIterator
+ from collections.abc import Sequence as GenericSequence
+-from typing import Optional, Union, cast
++from typing import Optional, Union, cast, List
+ 
+ import jinja2
+ from fastapi import Request
+@@ -38,6 +38,7 @@ from vllm.sampling_params import BeamSearchParams, SamplingParams
+ from vllm.sequence import Logprob
+ from vllm.transformers_utils.tokenizer import AnyTokenizer
+ from vllm.utils import merge_async_iterators
++from vllm.sequence import RequestMetrics
+ 
+ logger = init_logger(__name__)
+ 
+@@ -444,8 +445,9 @@ class OpenAIServingCompletion(OpenAIServing):
+         choices: list[CompletionResponseChoice] = []
+         num_prompt_tokens = 0
+         num_generated_tokens = 0
+-
++        metrics_list: List[RequestMetrics]= []
+         for final_res in final_res_batch:
++            metrics_list.append(final_res.metrics)
+             prompt_token_ids = final_res.prompt_token_ids
+             assert prompt_token_ids is not None
+             prompt_logprobs = clamp_prompt_logprobs(final_res.prompt_logprobs)
+@@ -522,6 +524,7 @@ class OpenAIServingCompletion(OpenAIServing):
+             model=model_name,
+             choices=choices,
+             usage=usage,
++            metrics_list=metrics_list,
+             kv_transfer_params=final_res_batch[0].kv_transfer_params)
+ 
+     def _create_completion_logprobs(
+-- 
+2.25.1
+

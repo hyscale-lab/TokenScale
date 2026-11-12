@@ -1,0 +1,25 @@
+{
+  "model_name": "facebook/opt-125m",
+  "cli": "vllm",
+  "env": [],
+  "args": [
+    "serve",
+    "/models/facebook/opt-125m",
+    "--gpu-memory-utilization",
+    "0.4",
+    "--load-format",
+    "serverless_llm",
+    "--served-model-name",
+    "facebook/opt-125m"
+  ],
+  "tp_arg": "--tensor-parallel-size",
+  "host_arg": "--host",
+  "port_arg": "--port",
+  "config": {
+    "tp_level": 1,
+    "max_request_per_instance": 1,
+    "min_instance": 0,
+    "min_life_time": 0,
+    "scale_down_to_zero_grace_period": 30
+  }
+}

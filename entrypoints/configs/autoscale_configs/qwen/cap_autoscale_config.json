@@ -1,0 +1,12 @@
+{
+    "type": "CAP",
+    "tp_level": 4,
+    "min_instance": 1,
+    "max_instance": 16,
+    "min_life_time": 0,
+    "scale_down_to_zero_grace_period": 30,
+    "stabilization_window_seconds": 10,
+    "capacity_profile_file_path": "entrypoints/configs/capacity_profiles/Qwen_2.5_32B.json",
+    "convert_instance": 0,
+    "convert_max_request": 10
+}

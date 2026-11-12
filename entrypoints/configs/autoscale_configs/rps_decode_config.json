@@ -1,0 +1,11 @@
+{
+    "type": "RPS",
+    "tp_level": 1,
+    "target_rps": 10,
+    "min_instance": 1,
+    "max_instance": 1,
+    "min_life_time": 0,
+    "scale_down_to_zero_grace_period": 30,
+    "distsim_url": "http://localhost:16669/simulate",
+    "decode_target_ms": 100
+}

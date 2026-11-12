@@ -1,0 +1,32 @@
+{
+  "model_name": "Qwen/Qwen2.5-7B",
+  "cli": "vllm",
+  "env": [
+    "UCX_TLS=rc,cuda_ipc,cuda_copy",
+    "UCX_SOCKADDR_TLS_PRIORITY=rdmacm",
+    "VLLM_ENABLE_V1_MULTIPROCESSING=1",
+    "VLLM_HTTP_TIMEOUT_KEEP_ALIVE=300",
+    "VLLM_WORKER_MULTIRPOC_METHOD=spawn",
+    "VLLM_KVC_MEM_GB=4",
+    "LMCACHE_TRACK_USAGE=false",
+    "LMCACHE_LOG_LEVEL=DEBUG"
+  ],
+  "args": [
+    "serve",
+    "Qwen/Qwen2.5-7B",
+    "--gpu-memory-utilization",
+    "0.1",
+    "--max-num-batched-tokens",
+    "20480",
+    "--max-model-len",
+    "20480",
+    "--max-num-seqs",
+    "1",
+    "--enforce-eager",
+    "--no-enable-prefix-caching"
+  ],
+  "tp_arg": "--tensor-parallel-size",
+  "host_arg": "--host",
+  "port_arg": "--port",
+  "autoscaler_config_path": "autoscale_configs/default_prefill_config.json"
+}

@@ -1,0 +1,137 @@
+# === Stage 1: Build sllm-store ===
+FROM pytorch/pytorch:2.5.1-cuda12.1-cudnn9-devel AS sllm-builder
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install uv and set timeout
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+ENV UV_HTTP_TIMEOUT=600
+
+WORKDIR /app
+RUN apt-get update && apt-get install -y git curl
+ARG SLLM_VERSION=manual_v0.4
+RUN git clone --branch lrq/vllm_v0_11_2_support https://github.com/ServerlessLLM/ServerlessLLM.git
+# COPY debug/sllm/model.cpp /app/ServerlessLLM/sllm_store/csrc/sllm_store/model.cpp
+WORKDIR /app/ServerlessLLM/sllm_store
+RUN uv pip install --system -r requirements.txt
+RUN uv pip install --system -r requirements-build.txt
+RUN uv pip install --system setuptools wheel
+RUN python3 setup.py bdist_wheel
+
+# === Stage 2: Build vllm and system dependencies ===
+FROM pytorch/pytorch:2.5.1-cuda12.1-cudnn9-devel AS base-deps
+WORKDIR /app
+
+# Install uv and set timeout
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+ENV UV_HTTP_TIMEOUT=600
+
+# System dependencies
+RUN apt update && apt install -y \
+    python3 python3-pip python3-dev \
+    git build-essential \
+    libopenblas-dev \
+    libssl-dev \
+    wget curl \
+    cmake \
+    ninja-build \
+    git-lfs \
+    kmod \
+    etcd \
+    libibverbs1 \
+    ibverbs-providers \
+    rdma-core \
+    pkg-config \
+    tmux \
+    libnuma-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install sllm-store
+COPY --from=sllm-builder /app/ServerlessLLM/sllm_store/dist /app/sllm_store/dist
+COPY --from=sllm-builder /app/ServerlessLLM/sllm_store/vllm_patch /app/sllm_store/vllm_patch
+RUN uv pip install --system /app/sllm_store/dist/*.whl
+
+# Install vllm
+# ARG VLLM_COMMIT=3c545c0
+RUN uv pip install --system vllm==0.11.2
+RUN /app/sllm_store/vllm_patch/patch.sh
+COPY liquidlet/metrics_patch /app/metrics_patch
+RUN /app/metrics_patch/v0_11_2/patch.sh
+
+# Install LMCache
+ENV CUDA_HOME="/usr/local/cuda"
+ARG torch_cuda_arch_list='7.0 7.5 8.0 8.6 8.9 9.0+PTX'
+ENV TORCH_CUDA_ARCH_LIST=${torch_cuda_arch_list}
+ARG vllm_fa_cmake_gpu_arches='80-real;90-real'
+ENV VLLM_FA_CMAKE_GPU_ARCHES=${vllm_fa_cmake_gpu_arches}
+ARG LMCACHE_VERSION=manual_v0.11
+RUN echo "Using LMCACHE_VERSION=$LMCACHE_VERSION" && \
+    git clone --branch lrq/own_version_tp https://github.com/lrq619/LMCache.git && \
+    cd LMCache && \
+    uv pip install --system .
+RUN uv pip install --system meson ninja pybind11
+
+# Build and install UCX
+RUN apt-get update && apt-get install -y librdmacm-dev libibverbs-dev rdma-core 
+RUN wget https://github.com/openucx/ucx/releases/download/v1.18.0/ucx-1.18.0.tar.gz && \
+    tar xzf ucx-1.18.0.tar.gz
+WORKDIR /app/ucx-1.18.0
+RUN ./configure \
+    --enable-shared \
+    --disable-static \
+    --disable-doxygen-doc \
+    --enable-optimizations \
+    --enable-cma \
+    --enable-devel-headers \
+    # --with-cuda=$CUDA_HOME \
+    --with-verbs \
+    --with-dm \
+    --enable-mt \
+    --with-rdmacm 
+    # --enable-gdrcopy 
+RUN make -j && make -j install-strip && ldconfig
+ENV LD_LIBRARY_PATH=/lib:/usr/local/lib:$LD_LIBRARY_PATH
+
+# Build and install nixl
+RUN git clone https://github.com/ai-dynamo/nixl.git /app/nixl
+WORKDIR /app/nixl
+# Checkout the exact commit before building
+RUN git checkout 69b633aa3016ac8778ea2fc6cc8c4ab387baec9b
+RUN mkdir build && meson setup build && cd build && ninja && ninja install
+RUN uv pip install --system .
+
+# Install Mooncake
+WORKDIR /app
+RUN git clone https://github.com/kvcache-ai/Mooncake.git
+WORKDIR /app/Mooncake
+RUN bash dependencies.sh -y
+RUN PATH="/usr/local/go/bin:${PATH}" \
+    && mkdir build \
+    && cd build \
+    && cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DUSE_ETCD=ON .. \
+    && make -j \
+    && make install
+RUN chmod 755 /opt/conda/lib/python3.11/site-packages/mooncake
+
+# === Stage 3: Build liquidlet ===
+FROM golang:1.23-bookworm AS liquidlet-builder
+WORKDIR /app/liquidlet
+COPY liquidlet/go.mod liquidlet/go.sum ./
+RUN go mod download
+COPY liquidlet /app/liquidlet
+RUN go build -o /app/liquidlet
+
+# === Final stage: assemble runtime ===
+FROM base-deps
+WORKDIR /app
+
+# Copy frequently changing app code LAST
+COPY --from=liquidlet-builder /app/liquidlet /app/liquidlet
+RUN mv /app/liquidlet/liquidlet /usr/local/bin/liquidlet
+
+COPY pd/mooncake/proxy_server.py /app/
+COPY pd/lmcache/proxy_server.py /app/lmcache_proxy_server.py
+COPY entrypoint.sh /app/entrypoint.sh
+COPY preload/preload.py /app/preload.py
+
+ENTRYPOINT [ "/app/entrypoint.sh" ]
+CMD [ "--mem-pool-size", "4GB" ]

@@ -1,0 +1,13 @@
+services:
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    volumes:
+      - ${PWD}/prometheus.yaml:/etc/prometheus/prometheus.yml  # Mount Prometheus config file
+      - ${SNAPSHOT}:/prometheus
+    network_mode: host  # Use host network
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    depends_on:
+      - prometheus
+    network_mode: host  # Use host network

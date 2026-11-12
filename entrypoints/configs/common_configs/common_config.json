@@ -1,0 +1,27 @@
+{
+    "router_port": 8889,
+    "router_metrics_port": 9091,
+    "prom_web_port": 9090,
+    "zmq_port": 7500,
+    "route_policy": "RR",
+    "router_tmp_dir_path": "/tmp",
+    "sif_images_path": "/scratch/users/ntu/$USER/sif_images",
+    "sqsh_images_path": "/scratch/users/ntu/$USER/sqsh_images",
+    "model_path": "/scratch/users/ntu/$USER/models",
+    "memory_pool_size": 32,
+    "log_path": "/scratch/users/ntu/$USER/logs",
+    "worker_port": 9000,
+    "fork_server_port": 48888,
+    "wait_min": 65,
+    "nscc_nodes": 1,
+    "nscc_private_key_path": "/home/users/ntu/$USER/.ssh/id_rsa",
+    "update_target_rps": "distserve",
+    "router_disable_autoscaler": "",
+    "provision_ratio": 1.0,
+    "gpu_per_node": 4,
+    "serving_mode": "online",
+    "router_extra_envs": {
+        "OUTPUT_PREDICTOR_ACCURACY": "0.85",
+        "ENABLE_COLDSTART_PROFILE": "0"
+    }
+}

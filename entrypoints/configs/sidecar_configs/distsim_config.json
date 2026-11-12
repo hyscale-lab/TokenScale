@@ -1,0 +1,4 @@
+[{
+    "sidecar_type": "distsim",
+    "args": ["--port", "16669"]
+}]

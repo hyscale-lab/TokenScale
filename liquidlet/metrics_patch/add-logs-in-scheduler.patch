@@ -1,0 +1,40 @@
+From 57f067d2537c04b46563254bd0f833b338f537c2 Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Mon, 26 May 2025 05:53:22 +0000
+Subject: [PATCH] add logs in scheduler
+
+---
+ vllm/core/scheduler.py | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/vllm/core/scheduler.py b/vllm/core/scheduler.py
+index c3bc6becf..a5ddfadca 100644
+--- a/vllm/core/scheduler.py
++++ b/vllm/core/scheduler.py
+@@ -959,6 +959,7 @@ class Scheduler:
+             can_allocate = self.block_manager.can_allocate(
+                 seq_group, num_lookahead_slots=num_lookahead_slots)
+             if can_allocate == AllocStatus.LATER:
++                logger.info(f"Requests gets queued because block manager returns later, queue size: {len(waiting_queue)}")
+                 break
+             elif can_allocate == AllocStatus.NEVER:
+                 logger.warning(
+@@ -990,6 +991,7 @@ class Scheduler:
+                 # We've reached the budget limit - since there might be
+                 # continuous prefills in the running queue, we should break
+                 # to avoid scheduling any new prefills.
++                logger.info(f"Requests gets queued because num batched token budget is reached, queue size: {len(waiting_queue)}")
+                 break
+ 
+             num_new_seqs = seq_group.get_max_num_running_seqs()
+@@ -997,6 +999,7 @@ class Scheduler:
+                     num_new_tokens=num_new_tokens_uncached,
+                     num_new_seqs=num_new_seqs,
+             ):
++                logger.info(f"Requests gets queued because budget says it's cannot be scheduled, queue size: {len(waiting_queue)}")
+                 break
+ 
+             # Can schedule this request.
+-- 
+2.25.1
+

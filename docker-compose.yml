@@ -1,0 +1,56 @@
+services:
+  promethus:
+    image: prom/prometheus:v3.2.1
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus/sd.json:/etc/prometheus/sd.json
+      - ./prometheus/data:/prometheus
+    restart: unless-stopped
+    command: [ "--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus", "--web.enable-admin-api" ]
+    networks:
+      - liquid_network
+  router:
+    build:
+      context: .
+      dockerfile: Dockerfile.router
+    image: liquid/router:latest
+    container_name: router
+    volumes:
+      - ./prometheus/sd.json:/app/sd.json
+    environment:
+      - SD_FILE=/app/sd.json
+    networks:
+      - liquid_network
+    ports:
+      - "8888:8888"
+
+  liquidlet01:
+    build:
+      context: .
+      dockerfile: Dockerfile.liquidlet
+    image: liquid/liquidlet:latest
+    container_name: liquidlet01
+    environment:
+      - ROUTER=http://router:8888/register_node
+      - STORAGE_PATH=/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [ "gpu" ]
+              device_ids: [ "0" ] # Assigns GPU 0 to the worker
+    depends_on:
+      - router
+    networks:
+      - liquid_network
+    volumes:
+      - ./models:/models
+
+networks:
+  liquid_network:
+    driver: bridge
+    name: liquid_network

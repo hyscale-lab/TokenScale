@@ -1,0 +1,28 @@
+From c95d1d43cac4dc33effcc22a75a1c3a41c6ea36c Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Tue, 17 Jun 2025 08:58:57 +0000
+Subject: [PATCH 2/4] log failed kv recv
+
+---
+ vllm/worker/model_runner.py | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/vllm/worker/model_runner.py b/vllm/worker/model_runner.py
+index 82db6617b..3d6f7d9be 100644
+--- a/vllm/worker/model_runner.py
++++ b/vllm/worker/model_runner.py
+@@ -1824,6 +1824,11 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
+                     kv_caches=kv_caches
+                 )
+ 
++            if not bypass_model_exec:
++                assert model_input.is_prompt, "model input is not prompt!"
++                for request_id, _ in model_input.request_ids_to_seq_ids.items():
++                    logger.info(f"[KV-transfer] request recv kv failed!: {request_id}")
++
+         multi_modal_kwargs = model_input.multi_modal_kwargs or {}
+         seqlen_agnostic_kwargs = {
+             "finished_requests_ids": model_input.finished_requests_ids,
+-- 
+2.25.1
+

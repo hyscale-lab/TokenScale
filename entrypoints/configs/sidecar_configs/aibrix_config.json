@@ -1,0 +1,6 @@
+[
+  {
+    "sidecar_type": "aibrix",
+    "args": ["--port", "8090", "--percentile", "50", "--ttft", "2", "--tpot", "0.1", "--tput_tolerance", "0.1"]
+  }
+]

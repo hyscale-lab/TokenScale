@@ -1,0 +1,16 @@
+# Router Build Stage
+FROM golang:1.23-bookworm AS builder 
+WORKDIR /app/router
+
+COPY router/go.mod router/go.sum ./
+RUN go mod download
+
+COPY router /app/router
+RUN go build -o /app/router
+
+# Run stage
+FROM debian:bookworm-slim
+
+COPY --from=builder /app/router /app/router
+
+ENTRYPOINT [ "/app/router/router" ]

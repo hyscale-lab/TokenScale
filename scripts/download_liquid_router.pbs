@@ -1,0 +1,10 @@
+#!/bin/bash
+#PBS -l select=1:ngpus=1
+#PBS -l walltime=01:00:00
+#PBS -j oe
+#PBS -N download_liquid_router_sif
+#PBS -o ./logs/download_liquid_router.log
+
+module load singularity
+export SINGULARITY_CACHEDIR=/scratch/users/ntu/$USER/.singularity
+singularity pull /scratch/users/ntu/$USER/sif_images/liquid_router.sif docker://cchuxin/router:latest

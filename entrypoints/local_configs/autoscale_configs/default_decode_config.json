@@ -1,0 +1,9 @@
+{
+    "type": "DEFAULT",
+    "tp_level": 1,
+    "max_request_per_instance": 33,
+    "min_instance": 3,
+    "max_instance": 3,
+    "min_life_time": 0,
+    "scale_down_to_zero_grace_period": 30
+}

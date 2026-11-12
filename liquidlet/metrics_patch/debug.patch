@@ -1,0 +1,24 @@
+From f2f6f913acb9250b988844a8c5b1ca6dc272bf02 Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Fri, 25 Apr 2025 13:23:18 +0100
+Subject: [PATCH] change info to debug
+
+---
+ vllm/entrypoints/logger.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/vllm/entrypoints/logger.py b/vllm/entrypoints/logger.py
+index 584ee0d9e..c692964c6 100644
+--- a/vllm/entrypoints/logger.py
++++ b/vllm/entrypoints/logger.py
+@@ -34,7 +34,7 @@ class RequestLogger:
+             if prompt_token_ids is not None:
+                 prompt_token_ids = prompt_token_ids[:max_log_len]
+ 
+-        logger.info(
++        logger.debug(
+             "Received request %s: prompt: %r, "
+             "params: %s, prompt_token_ids: %s, "
+             "lora_request: %s, prompt_adapter_request: %s.", request_id,
+-- 
+2.34.1

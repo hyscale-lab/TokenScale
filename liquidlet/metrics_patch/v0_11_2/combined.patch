@@ -1,0 +1,463 @@
+From 2bf52aada070d83b991f41deae242636d1d2bb06 Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Sat, 31 May 2025 12:41:56 +0000
+Subject: [PATCH 1/3] openai_entrypoint
+
+---
+ vllm/entrypoints/openai/protocol.py           | 4 +++-
+ vllm/entrypoints/openai/serving_completion.py | 6 +++++-
+ 2 files changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/vllm/entrypoints/openai/protocol.py b/vllm/entrypoints/openai/protocol.py
+index 65bd15ba3..08c335783 100644
+--- a/vllm/entrypoints/openai/protocol.py
++++ b/vllm/entrypoints/openai/protocol.py
+@@ -6,7 +6,7 @@
+ import json
+ import time
+ from http import HTTPStatus
+-from typing import Annotated, Any, ClassVar, Generic, Literal, TypeAlias, TypeVar
++from typing import Annotated, Any, ClassVar, Generic, Literal, TypeAlias, TypeVar, List
+ 
+ import regex as re
+ import torch
+@@ -92,6 +92,7 @@ from vllm.sampling_params import (
+ )
+ from vllm.utils import random_uuid
+ from vllm.utils.import_utils import resolve_obj_by_qualname
++from vllm.sequence import RequestMetrics
+ 
+ logger = init_logger(__name__)
+ 
+@@ -1908,6 +1909,7 @@ class CompletionResponse(OpenAIBaseModel):
+     service_tier: Literal["auto", "default", "flex", "scale", "priority"] | None = None
+     system_fingerprint: str | None = None
+     usage: UsageInfo
++    metrics_list: List[RequestMetrics]
+ 
+     # vLLM-specific fields that are not in OpenAI spec
+     kv_transfer_params: dict[str, Any] | None = Field(
+diff --git a/vllm/entrypoints/openai/serving_completion.py b/vllm/entrypoints/openai/serving_completion.py
+index a114b77eb..cdc0814f5 100644
+--- a/vllm/entrypoints/openai/serving_completion.py
++++ b/vllm/entrypoints/openai/serving_completion.py
+@@ -5,7 +5,7 @@ import asyncio
+ import time
+ from collections.abc import AsyncGenerator, AsyncIterator
+ from collections.abc import Sequence as GenericSequence
+-from typing import cast
++from typing import Optional, Union, cast, List
+ 
+ import jinja2
+ from fastapi import Request
+@@ -35,6 +35,7 @@ from vllm.outputs import RequestOutput
+ from vllm.sampling_params import BeamSearchParams, SamplingParams
+ from vllm.transformers_utils.tokenizer import AnyTokenizer
+ from vllm.utils.async_utils import merge_async_iterators
++from vllm.sequence import RequestMetrics
+ from vllm.utils.collection_utils import as_list
+ from vllm.v1.sample.logits_processor import validate_logits_processors_parameters
+ 
+@@ -522,9 +523,11 @@ class OpenAIServingCompletion(OpenAIServing):
+         choices: list[CompletionResponseChoice] = []
+         num_prompt_tokens = 0
+         num_generated_tokens = 0
++        metrics_list: List[RequestMetrics]= []        
+         kv_transfer_params = None
+         last_final_res = None
+         for final_res in final_res_batch:
++            metrics_list.append(final_res.metrics)
+             last_final_res = final_res
+             prompt_token_ids = final_res.prompt_token_ids
+             assert prompt_token_ids is not None
+@@ -619,6 +622,7 @@ class OpenAIServingCompletion(OpenAIServing):
+             model=model_name,
+             choices=choices,
+             usage=usage,
++            metrics_list=metrics_list,
+             kv_transfer_params=kv_transfer_params,
+         )
+ 
+-- 
+2.43.0
+
+From 0f639949146015c389325075301d3b7ce49570ed Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Sat, 21 Jun 2025 11:57:44 +0000
+Subject: [PATCH 2/3] v1 metrics
+
+---
+ vllm/v1/engine/output_processor.py | 28 +++++++++++++++++++++++++++-
+ 1 file changed, 27 insertions(+), 1 deletion(-)
+
+diff --git a/vllm/v1/engine/output_processor.py b/vllm/v1/engine/output_processor.py
+index bdbbfe259..30f0dd5ed 100644
+--- a/vllm/v1/engine/output_processor.py
++++ b/vllm/v1/engine/output_processor.py
+@@ -28,6 +28,8 @@ from vllm.v1.metrics.stats import (
+     RequestStateStats,
+     SchedulerStats,
+ )
++from vllm.sequence import RequestMetrics
++import time
+ 
+ 
+ class RequestOutputCollector:
+@@ -282,6 +284,10 @@ class RequestState:
+         else:
+             prompt_logprobs = self.logprobs_processor.prompt_logprobs
+ 
++        metrics = None
++        if finished:
++            metrics: RequestMetrics = self._convert_stats_to_metrics()
++
+         # If prompt embeds were used, put placeholder prompt token ids
+         prompt_token_ids = self.prompt_token_ids
+         if prompt_token_ids is None and self.prompt_embeds is not None:
+@@ -296,8 +302,28 @@ class RequestState:
+             finished=finished,
+             kv_transfer_params=kv_transfer_params,
+             num_cached_tokens=self.num_cached_tokens,
+-            metrics=self.stats,
++            metrics=metrics
++        )
++
++    def _convert_stats_to_metrics(self) -> RequestMetrics:
++        
++        queued_time = self.stats.scheduled_ts - self.stats.queued_ts
++
++        # Prefill interval is from first SCHEDULED to first NEW_TOKEN
++        # Any preemptions during prefill is included in the interval
++        prefill_time = self.stats.first_token_ts - self.stats.scheduled_ts
++
++        # Decode interval is from first NEW_TOKEN to last NEW_TOKEN
++        # Any preemptions during decode are included
++        metrics = RequestMetrics(
++            arrival_time=self.stats.arrival_time,
++            last_token_time=0,
++            first_scheduled_time=self.stats.arrival_time + queued_time,
++            time_in_queue=queued_time,
++            first_token_time=self.stats.arrival_time+queued_time+prefill_time,
++            finished_time=time.time()
+         )
++        return metrics
+ 
+     def _new_completion_output(
+         self,
+-- 
+2.43.0
+
+From 59a5e010caf6d5e0daadc3376d3f8a2de6ee6d08 Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Wed, 9 Jul 2025 13:38:30 +0000
+Subject: [PATCH 3/3] coldstart
+
+---
+ vllm/entrypoints/utils.py              |  2 +-
+ vllm/global_var.py                     |  1 +
+ vllm/model_executor/models/registry.py | 91 ++++++++++++++++++--------
+ vllm/transformers_utils/tokenizer.py   |  4 +-
+ vllm/utils/mem_utils.py                | 21 ++++--
+ vllm/v1/engine/core.py                 | 66 ++++++++++++++-----
+ 6 files changed, 134 insertions(+), 51 deletions(-)
+ create mode 100644 vllm/global_var.py
+
+diff --git a/vllm/entrypoints/utils.py b/vllm/entrypoints/utils.py
+index 088bb679f..4c03cd52b 100644
+--- a/vllm/entrypoints/utils.py
++++ b/vllm/entrypoints/utils.py
+@@ -173,7 +173,7 @@ def cli_env_setup():
+     # - https://docs.habana.ai/en/latest/PyTorch/Getting_Started_with_PyTorch_and_Gaudi/Getting_Started_with_PyTorch.html?highlight=multiprocessing#torch-multiprocessing-for-dataloaders
+     if "VLLM_WORKER_MULTIPROC_METHOD" not in os.environ:
+         logger.debug("Setting VLLM_WORKER_MULTIPROC_METHOD to 'spawn'")
+-        os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
++        os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "fork"
+ 
+ 
+ def _validate_truncation_size(
+diff --git a/vllm/global_var.py b/vllm/global_var.py
+new file mode 100644
+index 000000000..6d634e0a4
+--- /dev/null
++++ b/vllm/global_var.py
+@@ -0,0 +1 @@
++TOKENIZER_MAP = {}
+\ No newline at end of file
+diff --git a/vllm/model_executor/models/registry.py b/vllm/model_executor/models/registry.py
+index a2de597c8..7a7f0c981 100644
+--- a/vllm/model_executor/models/registry.py
++++ b/vllm/model_executor/models/registry.py
+@@ -19,6 +19,7 @@ from dataclasses import asdict, dataclass, field
+ from functools import lru_cache
+ from pathlib import Path
+ from typing import TypeVar
++import multiprocessing
+ 
+ import torch.nn as nn
+ import transformers
+@@ -32,6 +33,7 @@ from vllm.config import (
+ from vllm.logger import init_logger
+ from vllm.logging_utils import logtime
+ from vllm.transformers_utils.dynamic_module import try_get_class_from_dynamic_module
++import cloudpickle
+ 
+ from .interfaces import (
+     has_inner_state,
+@@ -1105,36 +1107,73 @@ ModelRegistry = _ModelRegistry(
+ )
+ 
+ _T = TypeVar("_T")
+-
++def _worker_function(serialized_data):
++    """Worker function that runs in the forked process"""
++    import cloudpickle
++    fn, output_filepath = cloudpickle.loads(serialized_data)
++    try:
++        result = fn()
++        with open(output_filepath, "wb") as f:
++            pickle.dump(result, f)
++        return True
++    except Exception as e:
++        # Log the exception and re-raise it
++        logger.error(f"Error in worker process: {e}")
++        raise
+ 
+ def _run_in_subprocess(fn: Callable[[], _T]) -> _T:
+-    # NOTE: We use a temporary directory instead of a temporary file to avoid
+-    # issues like https://stackoverflow.com/questions/23212435/permission-denied-to-write-to-my-temporary-file
++    # Set the start method to forkserver
++    ctx = multiprocessing.get_context('fork')
++    
+     with tempfile.TemporaryDirectory() as tempdir:
+-        output_filepath = os.path.join(tempdir, "registry_output.tmp")
+-
+-        # `cloudpickle` allows pickling lambda functions directly
+         import cloudpickle
+-
+-        input_bytes = cloudpickle.dumps((fn, output_filepath))
+-
+-        # cannot use `sys.executable __file__` here because the script
+-        # contains relative imports
+-        returned = subprocess.run(
+-            _SUBPROCESS_COMMAND, input=input_bytes, capture_output=True
+-        )
+-
+-        # check if the subprocess is successful
+-        try:
+-            returned.check_returncode()
+-        except Exception as e:
+-            # wrap raised exception to provide more information
+-            raise RuntimeError(
+-                f"Error raised in subprocess:\n{returned.stderr.decode()}"
+-            ) from e
+-
+-        with open(output_filepath, "rb") as f:
+-            return pickle.load(f)
++        output_filepath = os.path.join(tempdir, "registry_output.tmp")
++        
++        # Serialize the function and output path using cloudpickle
++        serialized_data = cloudpickle.dumps((fn, output_filepath))
++        
++        logger.info("Launched the forkserver process")
++        
++        # Use a pool with a single worker for better error handling
++        with ctx.Pool(1) as pool:
++            try:
++                # Submit the task and get the result
++                result = pool.apply(_worker_function, (serialized_data,))
++                logger.info("Forkserver process finished")
++                
++                # Load and return the result
++                with open(output_filepath, "rb") as f:
++                    return pickle.load(f)
++                    
++            except Exception as e:
++                raise RuntimeError(f"Error raised in forkserver process: {e}") from e
++
++
++# def _run_in_subprocess(fn: Callable[[], _T]) -> _T:
++#     # NOTE: We use a temporary directory instead of a temporary file to avoid
++#     # issues like https://stackoverflow.com/questions/23212435/permission-denied-to-write-to-my-temporary-file
++#     with tempfile.TemporaryDirectory() as tempdir:
++#         output_filepath = os.path.join(tempdir, "registry_output.tmp")
++
++#         # `cloudpickle` allows pickling lambda functions directly
++#         input_bytes = cloudpickle.dumps((fn, output_filepath))
++
++#         # cannot use `sys.executable __file__` here because the script
++#         # contains relative imports
++#         returned = subprocess.run(_SUBPROCESS_COMMAND,
++#                                   input=input_bytes,
++#                                   capture_output=True)
++
++#         # check if the subprocess is successful
++#         try:
++#             returned.check_returncode()
++#         except Exception as e:
++#             # wrap raised exception to provide more information
++#             raise RuntimeError(f"Error raised in subprocess:\n"
++#                                f"{returned.stderr.decode()}") from e
++
++#         with open(output_filepath, "rb") as f:
++#             return pickle.load(f)
+ 
+ 
+ def _run() -> None:
+diff --git a/vllm/transformers_utils/tokenizer.py b/vllm/transformers_utils/tokenizer.py
+index a39356890..e1f6c2b88 100644
+--- a/vllm/transformers_utils/tokenizer.py
++++ b/vllm/transformers_utils/tokenizer.py
+@@ -25,6 +25,7 @@ if TYPE_CHECKING:
+ else:
+     ModelConfig = Any
+     TokenizerBase = Any
++import vllm.global_var as gv 
+ 
+ logger = init_logger(__name__)
+ 
+@@ -261,7 +262,6 @@ def get_tokenizer(
+ 
+ cached_get_tokenizer = lru_cache(get_tokenizer)
+ 
+-
+ def cached_tokenizer_from_config(
+     model_config: ModelConfig,
+     **kwargs: Any,
+@@ -276,6 +276,8 @@ def cached_tokenizer_from_config(
+ 
+ 
+ def init_tokenizer_from_configs(model_config: ModelConfig):
++    if model_config.tokenizer in gv.TOKENIZER_MAP:
++        return gv.TOKENIZER_MAP[model_config.tokenizer]
+     runner_type = model_config.runner_type
+     if runner_type == "generate" or runner_type == "draft":
+         truncation_side = "left"
+diff --git a/vllm/utils/mem_utils.py b/vllm/utils/mem_utils.py
+index c6a6757be..bbc58b2b0 100644
+--- a/vllm/utils/mem_utils.py
++++ b/vllm/utils/mem_utils.py
+@@ -12,6 +12,7 @@ import torch
+ import torch.types
+ 
+ from .mem_constants import GiB_bytes
++import os
+ 
+ 
+ @cache
+@@ -43,16 +44,26 @@ class DeviceMemoryProfiler:
+         return current_platform.get_current_memory_usage(self.device)
+ 
+     def __enter__(self):
+-        self.initial_memory = self.current_memory_usage()
++        
++        env_mem_str = os.environ.get("VLLM_KVC_MEM_GB")
++
++        if env_mem_str is None:
++            self.initial_memory = self.current_memory_usage()
+         # This allows us to call methods of the context manager if needed
+         return self
+ 
+     def __exit__(self, exc_type, exc_val, exc_tb):
+-        self.final_memory = self.current_memory_usage()
+-        self.consumed_memory = self.final_memory - self.initial_memory
++        env_mem_str = os.environ.get("VLLM_KVC_MEM_GB")
+ 
+-        # Force garbage collection
+-        gc.collect()
++        if env_mem_str is None:
++            
++            self.final_memory = self.current_memory_usage()
++            self.consumed_memory = self.final_memory - self.initial_memory
++
++            # Force garbage collection
++            gc.collect()
++        else:
++            self.consumed_memory = 0
+ 
+ 
+ @dataclass
+diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
+index d49eb752d..b9f3bfd85 100644
+--- a/vllm/v1/engine/core.py
++++ b/vllm/v1/engine/core.py
+@@ -211,29 +211,59 @@ class EngineCore:
+     ) -> tuple[int, int, KVCacheConfig]:
+         start = time.time()
+ 
++        env_mem_str = os.environ.get("VLLM_KVC_MEM_GB")
++        GiB = 1024 ** 3
++
+         # Get all kv cache needed by the model
+         kv_cache_specs = self.model_executor.get_kv_cache_specs()
+-
+-        has_kv_cache = any(kv_cache_spec for kv_cache_spec in kv_cache_specs)
+-        if has_kv_cache:
+-            if os.environ.get("VLLM_ELASTIC_EP_SCALE_UP_LAUNCH") == "1":
+-                dp_group = getattr(self, "dp_group", None)
+-                assert dp_group is not None
+-                self.available_gpu_memory_for_kv_cache = (
+-                    ParallelConfig.sync_kv_cache_memory_size(dp_group, -1)
+-                )
+-                available_gpu_memory = [self.available_gpu_memory_for_kv_cache] * len(
+-                    kv_cache_specs
++        num_devices = len(kv_cache_specs)
++        if env_mem_str is not None:
++            # available_gpu_memory = [int(float(env_mem_str) * (1024 ** 3))]  # Convert GB to Bytes
++            # logger.info(f"available_gpu_memory (from env): {available_gpu_memory} Bytes")
++            parts = [p.strip() for p in env_mem_str.split(",") if p.strip()]
++            try:
++                vals_gib = [float(p) for p in parts]
++            except ValueError:
++                logger.error(f"VLLM_KVC_MEM_GB malformed: {env_mem_str!r}. Expected floats or comma-separated floats (GiB).")
++                raise
++
++            if len(vals_gib) == 1 and num_devices > 1:
++                vals_gib = vals_gib * num_devices
++            elif len(vals_gib) != num_devices:
++                logger.error(
++                    "VLLM_KVC_MEM_GB count mismatch: got %d value(s) for %d device(s). "
++                    "Provide one value (replicated) or one per visible device. env=%r",
++                    len(vals_gib), num_devices, env_mem_str,
+                 )
+-            else:
+-                # Profiles the peak memory usage of the model to determine how
+-                # much memory can be allocated for kv cache.
+-                available_gpu_memory = self.model_executor.determine_available_memory()
+-                self.available_gpu_memory_for_kv_cache = available_gpu_memory[0]
++                raise AssertionError("VLLM_KVC_MEM_GB count mismatch")
++
++            available_gpu_memory = []
++            for i, gib in enumerate(vals_gib):
++                if gib < 1.0:
++                    logger.error("VLLM_KVC_MEM_GB[%d]=%.3f GiB is too small; must be >= 1 GiB.", i, gib)
++                    raise AssertionError("VLLM_KVC_MEM_GB too small")
++                available_gpu_memory.append(int(gib * GiB))
++
++            logger.info("available_gpu_memory (from env, per device): %s Bytes", available_gpu_memory)
+         else:
+-            # Attention free models don't need memory for kv cache
+-            available_gpu_memory = [0] * len(kv_cache_specs)
+ 
++            has_kv_cache = any(kv_cache_spec for kv_cache_spec in kv_cache_specs)
++            if has_kv_cache:
++                if os.environ.get("VLLM_ELASTIC_EP_SCALE_UP_LAUNCH") == "1":
++                    dp_group = getattr(self, "dp_group", None)
++                    assert dp_group is not None
++                    self.available_gpu_memory_for_kv_cache = (
++                        ParallelConfig.sync_kv_cache_memory_size(dp_group, -1)
++                    )
++                    available_gpu_memory = [self.available_gpu_memory_for_kv_cache] * len(
++                        kv_cache_specs
++                    )
++            else:
++                # Attention free models don't need memory for kv cache
++                available_gpu_memory = [0] * len(kv_cache_specs)
++                logger.info(f"available_gpu_memory (profiled): {available_gpu_memory} Bytes, profiling memory takes: {(time.time() - profile_start):.1f}s")
++
++            logger.info(f"kv_cache_specs is {kv_cache_specs}, available_gpu_memory is {available_gpu_memory}")
+         assert len(kv_cache_specs) == len(available_gpu_memory)
+ 
+         kv_cache_configs = get_kv_cache_configs(
+-- 
+2.43.0
+

@@ -1,0 +1,6 @@
+[
+    {
+        "sidecar_type": "custom_scaler",
+        "args": ["--scaler_trace_file", "/path/to/Liquid/usertools/custom_scaler/scaler_trace.json"]
+    }
+]

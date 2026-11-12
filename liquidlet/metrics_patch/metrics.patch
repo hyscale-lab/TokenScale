@@ -1,0 +1,151 @@
+From 0b5bb3c56fd16abe08da3c1c54c67e34d0cae74b Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Tue, 25 Mar 2025 08:32:34 +0000
+Subject: [PATCH] feat: metrics
+
+---
+ .devcontainer/devcontainer.json | 23 +++++++++++++++++++++++
+ vllm/engine/llm_engine.py       | 14 ++++++++++----
+ vllm/engine/metrics.py          | 12 +++++++++++-
+ vllm/engine/metrics_types.py    |  1 +
+ 4 files changed, 45 insertions(+), 5 deletions(-)
+ create mode 100644 .devcontainer/devcontainer.json
+
+diff --git a/.devcontainer/devcontainer.json b/.devcontainer/devcontainer.json
+new file mode 100644
+index 0000000000000..fd24f34c3f9f9
+--- /dev/null
++++ b/.devcontainer/devcontainer.json
+@@ -0,0 +1,23 @@
++// For format details, see https://aka.ms/devcontainer.json. For config options, see the
++// README at: https://github.com/devcontainers/templates/tree/main/src/python
++{
++	"name": "Python 3",
++	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
++	"image": "mcr.microsoft.com/devcontainers/python:1-3.10-bookworm",
++	"runArgs": ["--gpus", "all"]
++
++	// Features to add to the dev container. More info: https://containers.dev/features.
++	// "features": {},
++
++	// Use 'forwardPorts' to make a list of ports inside the container available locally.
++	// "forwardPorts": [],
++
++	// Use 'postCreateCommand' to run commands after the container is created.
++	// "postCreateCommand": "pip3 install --user -r requirements.txt",
++
++	// Configure tool-specific properties.
++	// "customizations": {},
++
++	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
++	// "remoteUser": "root"
++}
+diff --git a/vllm/engine/llm_engine.py b/vllm/engine/llm_engine.py
+index 39f59e55da1f7..cb5ed2bd7611c 100644
+--- a/vllm/engine/llm_engine.py
++++ b/vllm/engine/llm_engine.py
+@@ -765,8 +765,8 @@ def add_request(
+                              "Priority scheduling is not enabled.")
+ 
+         if isinstance(params, SamplingParams) \
+-            and (params.guided_decoding or params.logits_processors) \
+-            and self.scheduler_config.num_scheduler_steps > 1:
++                and (params.guided_decoding or params.logits_processors) \
++                and self.scheduler_config.num_scheduler_steps > 1:
+             raise ValueError(
+                 "Guided decoding and logits processors are not supported "
+                 "in multi-step decoding")
+@@ -1032,7 +1032,7 @@ def _process_model_outputs(self,
+         outputs_by_sequence_group: List[List[SequenceGroupOutput]]
+         if has_multiple_outputs:
+             assert self.scheduler_config.is_multi_step or \
+-                     self.speculative_config
++                self.speculative_config
+             # Organize outputs by [step][sequence group] instead of
+             # [sequence group][step].
+             outputs_by_sequence_group = create_output_by_sequence_group(
+@@ -1223,7 +1223,7 @@ def _advance_to_next_step(
+         required if the worker is to perform async forward pass to next step.
+         """
+         for seq_group_metadata, sequence_group_outputs, scheduled_seq_group in \
+-            zip(seq_group_metadata_list, output, scheduled_seq_groups):
++                zip(seq_group_metadata_list, output, scheduled_seq_groups):
+             seq_group = scheduled_seq_group.seq_group
+ 
+             if seq_group.is_finished():
+@@ -1617,6 +1617,7 @@ def _get_stats(self,
+         time_inference_requests: List[float] = []
+         time_prefill_requests: List[float] = []
+         time_decode_requests: List[float] = []
++        time_per_output_tokens_requests: List[float] = []
+         time_in_queue_requests: List[float] = []
+         model_forward_time_requests: List[float] = []
+         model_execute_time_requests: List[float] = []
+@@ -1725,6 +1726,10 @@ def _get_stats(self,
+                             seq_group.metrics.first_scheduled_time)
+                         time_decode_requests.append(
+                             now - seq_group.metrics.first_token_time)
++                        time_per_output_tokens_requests.append(
++                            (now - seq_group.metrics.first_token_time) / sum(seq.get_output_len()
++                                                                             for seq in seq_group.get_finished_seqs())
++                        )
+                         time_inference_requests.append(
+                             now - seq_group.metrics.first_scheduled_time)
+                     if seq_group.metrics.time_in_queue is not None:
+@@ -1804,6 +1809,7 @@ def _get_stats(self,
+             time_inference_requests=time_inference_requests,
+             time_prefill_requests=time_prefill_requests,
+             time_decode_requests=time_decode_requests,
++            time_per_output_tokens_requests=time_per_output_tokens_requests,
+             time_in_queue_requests=time_in_queue_requests,
+             model_forward_time_requests=model_forward_time_requests,
+             model_execute_time_requests=model_execute_time_requests,
+diff --git a/vllm/engine/metrics.py b/vllm/engine/metrics.py
+index c8aec8dd3afa3..0a5c43e5bba7b 100644
+--- a/vllm/engine/metrics.py
++++ b/vllm/engine/metrics.py
+@@ -147,7 +147,7 @@ def __init__(self, labelnames: List[str], vllm_config: VllmConfig):
+         # Request stats
+         #   Latency
+         request_latency_buckets = [
+-            0.3, 0.5, 0.8, 1.0, 1.5, 2.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0,
++            0.25, 0.4, 0.5, 0.8, 1.0, 1.5, 2.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0,
+             40.0, 50.0, 60.0
+         ]
+         self.histogram_e2e_time_request = self._histogram_cls(
+@@ -179,6 +179,14 @@ def __init__(self, labelnames: List[str], vllm_config: VllmConfig):
+             "Histogram of time spent in DECODE phase for request.",
+             labelnames=labelnames,
+             buckets=request_latency_buckets)
++        self.histogram_time_per_output_token_request = self._histogram_cls(
++            name="vllm:request_time_per_output_token_seconds",
++            documentation="Histogram of time per output token for request.",
++            labelnames=labelnames,
++            buckets=[
++                0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.75,
++                1.0, 2.5
++            ])
+         self.histogram_time_in_queue_request = self._histogram_cls(
+             name="vllm:time_in_queue_requests",
+             documentation=
+@@ -610,6 +618,8 @@ def _log_prometheus(self, stats: Stats) -> None:
+                             stats.time_prefill_requests)
+         self._log_histogram(self.metrics.histogram_decode_time_request,
+                             stats.time_decode_requests)
++        self._log_histogram(self.metrics.histogram_time_per_output_token_request,
++                            stats.time_per_output_tokens_requests)
+         self._log_histogram(self.metrics.histogram_time_in_queue_request,
+                             stats.time_in_queue_requests)
+         self._log_histogram(self.metrics.histogram_model_forward_time_request,
+diff --git a/vllm/engine/metrics_types.py b/vllm/engine/metrics_types.py
+index 5c7a430d11c5a..08660fe44f48b 100644
+--- a/vllm/engine/metrics_types.py
++++ b/vllm/engine/metrics_types.py
+@@ -52,6 +52,7 @@ class Stats:
+     time_inference_requests: List[float]
+     time_prefill_requests: List[float]
+     time_decode_requests: List[float]
++    time_per_output_tokens_requests: List[float]
+     time_in_queue_requests: List[float]
+     model_forward_time_requests: List[float]
+     model_execute_time_requests: List[float]

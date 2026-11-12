@@ -1,0 +1,9 @@
+{
+    "LLMLoadgen_path": "/home/users/ntu/$USER/proj/LLMLoadgen",
+    "sampling_rate": 100,
+    "trace_file_path": "/scratch/users/ntu/$USER/traces/code/sample_0_all_input1_output1_ALL.json",
+    "extra_params": {
+        "-max_drift": "1000",
+        "-recur_step": "3"
+}
+}

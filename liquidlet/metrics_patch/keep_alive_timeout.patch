@@ -1,0 +1,25 @@
+From 34cc15d514ed515d26deca895caae1b45d746877 Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Fri, 23 May 2025 14:09:03 +0000
+Subject: [PATCH] change keep alive timeout
+
+---
+ vllm/entrypoints/openai/api_server.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/vllm/entrypoints/openai/api_server.py b/vllm/entrypoints/openai/api_server.py
+index 2e45b4742..df6bd2e78 100644
+--- a/vllm/entrypoints/openai/api_server.py
++++ b/vllm/entrypoints/openai/api_server.py
+@@ -71,7 +71,7 @@ from vllm.utils import (FlexibleArgumentParser, get_open_zmq_ipc_path,
+                         is_valid_ipv6_address, set_ulimit)
+ from vllm.version import __version__ as VLLM_VERSION
+ 
+-TIMEOUT_KEEP_ALIVE = 5  # seconds
++TIMEOUT_KEEP_ALIVE = 120  # seconds
+ 
+ prometheus_multiproc_dir: tempfile.TemporaryDirectory
+ 
+-- 
+2.25.1
+

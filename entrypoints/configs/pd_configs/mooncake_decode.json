@@ -1,0 +1,7 @@
+{
+    "local_hostname": "127.0.0.1",
+    "metadata_server": "etcd://localhost:2379",
+    "protocol": "rdma",
+    "device_name": "mlx5_0",
+    "master_server_address": "localhost:50001"
+}

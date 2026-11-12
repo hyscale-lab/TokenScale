@@ -1,0 +1,83 @@
+From 2bf52aada070d83b991f41deae242636d1d2bb06 Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Sat, 31 May 2025 12:41:56 +0000
+Subject: [PATCH 1/3] openai_entrypoint
+
+---
+ vllm/entrypoints/openai/protocol.py           | 4 +++-
+ vllm/entrypoints/openai/serving_completion.py | 6 +++++-
+ 2 files changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/vllm/entrypoints/openai/protocol.py b/vllm/entrypoints/openai/protocol.py
+index 65bd15ba3..08c335783 100644
+--- a/vllm/entrypoints/openai/protocol.py
++++ b/vllm/entrypoints/openai/protocol.py
+@@ -6,7 +6,7 @@
+ import json
+ import time
+ from http import HTTPStatus
+-from typing import Annotated, Any, ClassVar, Generic, Literal, TypeAlias, TypeVar
++from typing import Annotated, Any, ClassVar, Generic, Literal, TypeAlias, TypeVar, List
+ 
+ import regex as re
+ import torch
+@@ -92,6 +92,7 @@ from vllm.sampling_params import (
+ )
+ from vllm.utils import random_uuid
+ from vllm.utils.import_utils import resolve_obj_by_qualname
++from vllm.sequence import RequestMetrics
+ 
+ logger = init_logger(__name__)
+ 
+@@ -1908,6 +1909,7 @@ class CompletionResponse(OpenAIBaseModel):
+     service_tier: Literal["auto", "default", "flex", "scale", "priority"] | None = None
+     system_fingerprint: str | None = None
+     usage: UsageInfo
++    metrics_list: List[RequestMetrics]
+ 
+     # vLLM-specific fields that are not in OpenAI spec
+     kv_transfer_params: dict[str, Any] | None = Field(
+diff --git a/vllm/entrypoints/openai/serving_completion.py b/vllm/entrypoints/openai/serving_completion.py
+index a114b77eb..cdc0814f5 100644
+--- a/vllm/entrypoints/openai/serving_completion.py
++++ b/vllm/entrypoints/openai/serving_completion.py
+@@ -5,7 +5,7 @@ import asyncio
+ import time
+ from collections.abc import AsyncGenerator, AsyncIterator
+ from collections.abc import Sequence as GenericSequence
+-from typing import cast
++from typing import Optional, Union, cast, List
+ 
+ import jinja2
+ from fastapi import Request
+@@ -35,6 +35,7 @@ from vllm.outputs import RequestOutput
+ from vllm.sampling_params import BeamSearchParams, SamplingParams
+ from vllm.transformers_utils.tokenizer import AnyTokenizer
+ from vllm.utils.async_utils import merge_async_iterators
++from vllm.sequence import RequestMetrics
+ from vllm.utils.collection_utils import as_list
+ from vllm.v1.sample.logits_processor import validate_logits_processors_parameters
+ 
+@@ -522,9 +523,11 @@ class OpenAIServingCompletion(OpenAIServing):
+         choices: list[CompletionResponseChoice] = []
+         num_prompt_tokens = 0
+         num_generated_tokens = 0
++        metrics_list: List[RequestMetrics]= []        
+         kv_transfer_params = None
+         last_final_res = None
+         for final_res in final_res_batch:
++            metrics_list.append(final_res.metrics)
+             last_final_res = final_res
+             prompt_token_ids = final_res.prompt_token_ids
+             assert prompt_token_ids is not None
+@@ -619,6 +622,7 @@ class OpenAIServingCompletion(OpenAIServing):
+             model=model_name,
+             choices=choices,
+             usage=usage,
++            metrics_list=metrics_list,
+             kv_transfer_params=kv_transfer_params,
+         )
+ 
+-- 
+2.43.0
+

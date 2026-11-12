@@ -1,0 +1,13 @@
+{
+    "LLMLoadgen_path": "/path/to/LLMLoadgen",
+    "sampling_rate": 100,
+    "trace_file_path": "/scratch/users/ntu/$USER/traces/conv/sample_0_all_input1_output1_ids.json",
+    "model": "",
+    "input_length_ratio": 1,
+    "output_length_ratio": 1,
+    "extra_params": {
+        "-max_drift": "100",
+        "-recur_step": "3",
+        "-upscale": "trace"
+}
+}

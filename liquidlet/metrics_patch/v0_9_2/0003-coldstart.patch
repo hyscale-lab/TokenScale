@@ -1,0 +1,516 @@
+From 592a328bce63a00f6e3de6402760462c004e6600 Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Wed, 9 Jul 2025 13:38:30 +0000
+Subject: [PATCH 3/4] coldstart
+
+---
+ vllm/engine/arg_utils.py                   | 109 ++++++++++++++++++++-
+ vllm/entrypoints/utils.py                  |   2 +-
+ vllm/global_var.py                         |   1 +
+ vllm/model_executor/models/registry.py     |  85 +++++++++++-----
+ vllm/transformers_utils/tokenizer.py       |   3 +-
+ vllm/transformers_utils/tokenizer_group.py |  11 ++-
+ vllm/utils/__init__.py                              |  19 +++-
+ vllm/v1/engine/core.py                     |  44 ++++++++-
+ vllm/v1/worker/gpu_model_runner.py         |  63 ++++++------
+ 9 files changed, 264 insertions(+), 73 deletions(-)
+ create mode 100644 vllm/global_var.py
+
+diff --git a/vllm/engine/arg_utils.py b/vllm/engine/arg_utils.py
+index 6c908f88b..2cba14746 100644
+--- a/vllm/engine/arg_utils.py
++++ b/vllm/engine/arg_utils.py
+@@ -43,7 +43,7 @@ from vllm.transformers_utils.utils import check_gguf_file
+ from vllm.usage.usage_lib import UsageContext
+ from vllm.utils import (STR_DUAL_CHUNK_FLASH_ATTN_VAL, FlexibleArgumentParser,
+                         GiB_bytes, get_ip, is_in_ray_actor)
+-
++import os
+ # yapf: enable
+ 
+ logger = init_logger(__name__)
+@@ -53,6 +53,111 @@ T = TypeVar("T")
+ TypeHint = Union[type[Any], object]
+ TypeHintT = Union[type[T], object]
+ 
++class KwargsCache:
++    def __init__(self):
++        cache_path = os.getenv("VLLM_DISK_CACHE_PATH")
++        if cache_path:
++            # Persistent, cross-process cache
++            self.cache = dc.Cache(cache_path)
++            self.use_diskcache = True
++        else:
++            # In-memory, per-process LRU cache
++            self._compute_kwargs = functools.lru_cache(maxsize=30)(self._compute_kwargs_impl)
++            self.use_diskcache = False
++
++    def _compute_kwargs_impl(self, cls) -> dict[str, Any]:
++        cls_docs = get_attr_docs(cls)
++        kwargs = {}
++        for field in fields(cls):
++            type_hints: set[TypeHint] = get_type_hints(field.type)
++            generator = (th for th in type_hints if is_dataclass(th))
++            dataclass_cls = next(generator, None)
++
++            if field.default is not MISSING:
++                default = field.default
++            elif field.default_factory is not MISSING:
++                default = field.default_factory()
++
++            name = field.name
++            help = cls_docs[name].strip().replace("%", "%%")
++            kwargs[name] = {"default": default, "help": help}
++
++            json_tip = """\n\nShould either be a valid JSON string or JSON keys
++            passed individually..."""  # truncated for brevity
++
++            if dataclass_cls is not None:
++                def parse_dataclass(val: str, cls=dataclass_cls) -> Any:
++                    try:
++                        if hasattr(cls, "from_cli"):
++                            return cls.from_cli(val)
++                        return TypeAdapter(cls).validate_json(val)
++                    except ValidationError as e:
++                        raise argparse.ArgumentTypeError(repr(e)) from e
++                kwargs[name]["type"] = parse_dataclass
++                kwargs[name]["help"] += json_tip
++            elif contains_type(type_hints, bool):
++                kwargs[name]["action"] = argparse.BooleanOptionalAction
++            elif contains_type(type_hints, Literal):
++                kwargs[name].update(literal_to_kwargs(type_hints))
++            elif contains_type(type_hints, tuple):
++                type_hint = get_type(type_hints, tuple)
++                types = get_args(type_hint)
++                tuple_type = types[0]
++                assert all(t is tuple_type for t in types if t is not Ellipsis)
++                kwargs[name]["type"] = tuple_type
++                kwargs[name]["nargs"] = "+" if Ellipsis in types else len(types)
++            elif contains_type(type_hints, list):
++                type_hint = get_type(type_hints, list)
++                types = get_args(type_hint)
++                assert len(types) == 1
++                kwargs[name]["type"] = types[0]
++                kwargs[name]["nargs"] = "+"
++            elif contains_type(type_hints, int):
++                kwargs[name]["type"] = int
++                if name in {"max_model_len", "max_num_batched_tokens"}:
++                    kwargs[name]["type"] = human_readable_int
++            elif contains_type(type_hints, float):
++                kwargs[name]["type"] = float
++            elif (contains_type(type_hints, dict)
++                  and (contains_type(type_hints, str)
++                       or any(is_not_builtin(th) for th in type_hints))):
++                kwargs[name]["type"] = union_dict_and_str
++            elif contains_type(type_hints, dict):
++                kwargs[name]["type"] = parse_type(json.loads)
++                kwargs[name]["help"] += json_tip
++            elif (contains_type(type_hints, str)
++                  or any(is_not_builtin(th) for th in type_hints)):
++                kwargs[name]["type"] = str
++            else:
++                raise ValueError(f"Unsupported type {type_hints} for argument {name}.")
++
++            if get_origin(kwargs[name].get("type")) is Literal:
++                kwargs[name].update(literal_to_kwargs({kwargs[name]["type"]}))
++
++            if type(None) in type_hints and not contains_type(type_hints, bool):
++                kwargs[name]["type"] = optional_type(kwargs[name]["type"])
++                if kwargs[name].get("choices"):
++                    kwargs[name]["choices"].append("None")
++
++        return kwargs
++
++    def _compute_kwargs(self, cls):
++        """Will be replaced by lru_cache in __init__ if using memory cache."""
++        return self._compute_kwargs_impl(cls)
++
++    def get_kwargs(self, cls) -> dict[str, Any]:
++        if self.use_diskcache:
++            key = f"compute_kwargs:{cls.__module__}.{cls.__qualname__}"
++            if key in self.cache:
++                kwargs = self.cache[key]
++            else:
++                kwargs = self._compute_kwargs_impl(cls)
++                self.cache[key] = kwargs
++            return copy.deepcopy(kwargs)
++        else:
++            return copy.deepcopy(self._compute_kwargs(cls))
++
++KWARGS_CACHE = KwargsCache()
+ 
+ def parse_type(return_type: Callable[[str], T]) -> Callable[[str], T]:
+ 
+@@ -279,7 +384,7 @@ def get_kwargs(cls: ConfigType) -> dict[str, Any]:
+     is returned so callers can mutate the dictionary without affecting the
+     cached version.
+     """
+-    return copy.deepcopy(_compute_kwargs(cls))
++    return copy.deepcopy(KWARGS_CACHE._compute_kwargs(cls))
+ 
+ 
+ @dataclass
+diff --git a/vllm/entrypoints/utils.py b/vllm/entrypoints/utils.py
+index 16ba2b453..b3124a075 100644
+--- a/vllm/entrypoints/utils.py
++++ b/vllm/entrypoints/utils.py
+@@ -148,7 +148,7 @@ def cli_env_setup():
+     # - https://docs.habana.ai/en/latest/PyTorch/Getting_Started_with_PyTorch_and_Gaudi/Getting_Started_with_PyTorch.html?highlight=multiprocessing#torch-multiprocessing-for-dataloaders
+     if "VLLM_WORKER_MULTIPROC_METHOD" not in os.environ:
+         logger.debug("Setting VLLM_WORKER_MULTIPROC_METHOD to 'spawn'")
+-        os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
++        os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "fork"
+ 
+ 
+ def _validate_truncation_size(
+diff --git a/vllm/global_var.py b/vllm/global_var.py
+new file mode 100644
+index 000000000..6d634e0a4
+--- /dev/null
++++ b/vllm/global_var.py
+@@ -0,0 +1 @@
++TOKENIZER_MAP = {}
+\ No newline at end of file
+diff --git a/vllm/model_executor/models/registry.py b/vllm/model_executor/models/registry.py
+index ff605cae0..2c53fe207 100644
+--- a/vllm/model_executor/models/registry.py
++++ b/vllm/model_executor/models/registry.py
+@@ -15,6 +15,7 @@ from collections.abc import Set
+ from dataclasses import dataclass, field
+ from functools import lru_cache
+ from typing import Callable, Optional, TypeVar, Union
++import multiprocessing
+ 
+ import cloudpickle
+ import torch.nn as nn
+@@ -582,33 +583,71 @@ ModelRegistry = _ModelRegistry({
+ })
+ 
+ _T = TypeVar("_T")
+-
++def _worker_function(serialized_data):
++    """Worker function that runs in the forked process"""
++    fn, output_filepath = cloudpickle.loads(serialized_data)
++    try:
++        result = fn()
++        with open(output_filepath, "wb") as f:
++            pickle.dump(result, f)
++        return True
++    except Exception as e:
++        # Log the exception and re-raise it
++        logger.error(f"Error in worker process: {e}")
++        raise
+ 
+ def _run_in_subprocess(fn: Callable[[], _T]) -> _T:
+-    # NOTE: We use a temporary directory instead of a temporary file to avoid
+-    # issues like https://stackoverflow.com/questions/23212435/permission-denied-to-write-to-my-temporary-file
++    # Set the start method to forkserver
++    ctx = multiprocessing.get_context('fork')
++    
+     with tempfile.TemporaryDirectory() as tempdir:
+         output_filepath = os.path.join(tempdir, "registry_output.tmp")
+-
+-        # `cloudpickle` allows pickling lambda functions directly
+-        input_bytes = cloudpickle.dumps((fn, output_filepath))
+-
+-        # cannot use `sys.executable __file__` here because the script
+-        # contains relative imports
+-        returned = subprocess.run(_SUBPROCESS_COMMAND,
+-                                  input=input_bytes,
+-                                  capture_output=True)
+-
+-        # check if the subprocess is successful
+-        try:
+-            returned.check_returncode()
+-        except Exception as e:
+-            # wrap raised exception to provide more information
+-            raise RuntimeError(f"Error raised in subprocess:\n"
+-                               f"{returned.stderr.decode()}") from e
+-
+-        with open(output_filepath, "rb") as f:
+-            return pickle.load(f)
++        
++        # Serialize the function and output path using cloudpickle
++        serialized_data = cloudpickle.dumps((fn, output_filepath))
++        
++        logger.info("Launched the forkserver process")
++        
++        # Use a pool with a single worker for better error handling
++        with ctx.Pool(1) as pool:
++            try:
++                # Submit the task and get the result
++                result = pool.apply(_worker_function, (serialized_data,))
++                logger.info("Forkserver process finished")
++                
++                # Load and return the result
++                with open(output_filepath, "rb") as f:
++                    return pickle.load(f)
++                    
++            except Exception as e:
++                raise RuntimeError(f"Error raised in forkserver process: {e}") from e
++
++
++# def _run_in_subprocess(fn: Callable[[], _T]) -> _T:
++#     # NOTE: We use a temporary directory instead of a temporary file to avoid
++#     # issues like https://stackoverflow.com/questions/23212435/permission-denied-to-write-to-my-temporary-file
++#     with tempfile.TemporaryDirectory() as tempdir:
++#         output_filepath = os.path.join(tempdir, "registry_output.tmp")
++
++#         # `cloudpickle` allows pickling lambda functions directly
++#         input_bytes = cloudpickle.dumps((fn, output_filepath))
++
++#         # cannot use `sys.executable __file__` here because the script
++#         # contains relative imports
++#         returned = subprocess.run(_SUBPROCESS_COMMAND,
++#                                   input=input_bytes,
++#                                   capture_output=True)
++
++#         # check if the subprocess is successful
++#         try:
++#             returned.check_returncode()
++#         except Exception as e:
++#             # wrap raised exception to provide more information
++#             raise RuntimeError(f"Error raised in subprocess:\n"
++#                                f"{returned.stderr.decode()}") from e
++
++#         with open(output_filepath, "rb") as f:
++#             return pickle.load(f)
+ 
+ 
+ def _run() -> None:
+diff --git a/vllm/transformers_utils/tokenizer.py b/vllm/transformers_utils/tokenizer.py
+index ae96ebe4e..dde321b8c 100644
+--- a/vllm/transformers_utils/tokenizer.py
++++ b/vllm/transformers_utils/tokenizer.py
+@@ -25,13 +25,13 @@ from vllm.utils import make_async
+ 
+ if TYPE_CHECKING:
+     from vllm.config import ModelConfig
++import diskcache as dc
+ 
+ logger = init_logger(__name__)
+ 
+ AnyTokenizer = Union[PreTrainedTokenizer, PreTrainedTokenizerFast,
+                      TokenizerBase]
+ 
+-
+ def decode_tokens(
+     tokenizer: AnyTokenizer,
+     token_ids: list[int],
+@@ -269,7 +269,6 @@ def get_tokenizer(
+ 
+ cached_get_tokenizer = lru_cache(get_tokenizer)
+ 
+-
+ def cached_tokenizer_from_config(
+     model_config: "ModelConfig",
+     **kwargs: Any,
+diff --git a/vllm/transformers_utils/tokenizer_group.py b/vllm/transformers_utils/tokenizer_group.py
+index eb53cceaa..e3cd1fd94 100644
+--- a/vllm/transformers_utils/tokenizer_group.py
++++ b/vllm/transformers_utils/tokenizer_group.py
+@@ -8,9 +8,10 @@ from vllm.lora.request import LoRARequest
+ from vllm.transformers_utils.tokenizer import (AnyTokenizer, encode_tokens,
+                                                get_lora_tokenizer,
+                                                get_lora_tokenizer_async,
+-                                               get_tokenizer)
++                                               get_tokenizer,
++                                               )
+ from vllm.utils import LRUCache
+-
++import vllm.global_var as gv 
+ 
+ class TokenizerGroup:
+     """A group of tokenizers that can be used for LoRA adapters."""
+@@ -21,7 +22,11 @@ class TokenizerGroup:
+         self.tokenizer_config = tokenizer_config
+         self.enable_lora = enable_lora
+         self.max_input_length = max_input_length
+-        self.tokenizer = get_tokenizer(self.tokenizer_id, **tokenizer_config)
++        # first try to get the tokenizer from global_var
++        if self.tokenizer_id in gv.TOKENIZER_MAP:
++            self.tokenizer = gv.TOKENIZER_MAP[self.tokenizer_id]
++        else:
++            self.tokenizer = get_tokenizer(self.tokenizer_id, **tokenizer_config)
+         max_loras = tokenizer_config.get("max_loras", 0)
+         self.lora_tokenizers = LRUCache[int, AnyTokenizer](
+             capacity=max(max_loras, max_num_seqs) if enable_lora else 0)
+diff --git a/vllm/utils/__init__.py b/vllm/utils/__init__.py
+index fdefda901..67beb2480 100644
+--- a/vllm/utils/__init__.py
++++ b/vllm/utils/__init__.py
+@@ -910,17 +910,26 @@ class DeviceMemoryProfiler:
+         return current_platform.get_current_memory_usage(self.device)
+ 
+     def __enter__(self):
+-        self.initial_memory = self.current_memory_usage()
++        
++        env_mem_str = os.environ.get("VLLM_KVC_MEM_GB")
++
++        if env_mem_str is None:
++            self.initial_memory = self.current_memory_usage()
+         # This allows us to call methods of the context manager if needed
+         return self
+ 
+     def __exit__(self, exc_type, exc_val, exc_tb):
+-        self.final_memory = self.current_memory_usage()
+-        self.consumed_memory = self.final_memory - self.initial_memory
++        env_mem_str = os.environ.get("VLLM_KVC_MEM_GB")
+ 
+-        # Force garbage collection
+-        gc.collect()
++        if env_mem_str is None:
++            
++            self.final_memory = self.current_memory_usage()
++            self.consumed_memory = self.final_memory - self.initial_memory
+ 
++            # Force garbage collection
++            gc.collect()
++        else:
++            self.consumed_memory = 0
+ 
+ def make_ndarray_with_pad(
+     x: list[list[T]],
+diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
+index 453ed364d..5bc26463a 100644
+--- a/vllm/v1/engine/core.py
++++ b/vllm/v1/engine/core.py
+@@ -136,11 +136,49 @@ class EngineCore:
+ 
+         # Get all kv cache needed by the model
+         kv_cache_specs = self.model_executor.get_kv_cache_specs()
++        num_devices = len(kv_cache_specs)
+ 
+         # Profiles the peak memory usage of the model to determine how much
+         # memory can be allocated for kv cache.
+-        available_gpu_memory = self.model_executor.determine_available_memory()
++        # available_gpu_memory = self.model_executor.determine_available_memory()
++        env_mem_str = os.environ.get("VLLM_KVC_MEM_GB")
++        GiB = 1024 ** 3
++
++        if env_mem_str is not None:
++            # available_gpu_memory = [int(float(env_mem_str) * (1024 ** 3))]  # Convert GB to Bytes
++            # logger.info(f"available_gpu_memory (from env): {available_gpu_memory} Bytes")
++            parts = [p.strip() for p in env_mem_str.split(",") if p.strip()]
++            try:
++                vals_gib = [float(p) for p in parts]
++            except ValueError:
++                logger.error(f"VLLM_KVC_MEM_GB malformed: {env_mem_str!r}. Expected floats or comma-separated floats (GiB).")
++                raise
++
++            if len(vals_gib) == 1 and num_devices > 1:
++                vals_gib = vals_gib * num_devices
++            elif len(vals_gib) != num_devices:
++                logger.error(
++                    "VLLM_KVC_MEM_GB count mismatch: got %d value(s) for %d device(s). "
++                    "Provide one value (replicated) or one per visible device. env=%r",
++                    len(vals_gib), num_devices, env_mem_str,
++                )
++                raise AssertionError("VLLM_KVC_MEM_GB count mismatch")
++
++            available_gpu_memory = []
++            for i, gib in enumerate(vals_gib):
++                if gib < 1.0:
++                    logger.error("VLLM_KVC_MEM_GB[%d]=%.3f GiB is too small; must be >= 1 GiB.", i, gib)
++                    raise AssertionError("VLLM_KVC_MEM_GB too small")
++                available_gpu_memory.append(int(gib * GiB))
++
++            logger.info("available_gpu_memory (from env, per device): %s Bytes", available_gpu_memory)
++            
++        else:
++            profile_start = time.time()
++            available_gpu_memory = self.model_executor.determine_available_memory()
++            logger.info(f"available_gpu_memory (profiled): {available_gpu_memory} Bytes, profiling memory takes: {(time.time() - profile_start):.1f}s")
+ 
++        logger.info(f"kv_cache_specs is {kv_cache_specs}, available_gpu_memory is {available_gpu_memory}")
+         assert len(kv_cache_specs) == len(available_gpu_memory)
+         # Get the kv cache tensor size
+         kv_cache_configs = [
+@@ -149,10 +187,6 @@ class EngineCore:
+             for kv_cache_spec_one_worker, available_gpu_memory_one_worker in
+             zip(kv_cache_specs, available_gpu_memory)
+         ]
+-
+-        # Since we use a shared centralized controller, we need the
+-        # `kv_cache_config` to be consistent across all workers to make sure
+-        # all the memory operators can be applied to all workers.
+         unify_kv_cache_configs(kv_cache_configs)
+ 
+         # All workers have the same kv_cache_config except layer names, so use
+diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
+index 3c9de5720..4a247befa 100644
+--- a/vllm/v1/worker/gpu_model_runner.py
++++ b/vllm/v1/worker/gpu_model_runner.py
+@@ -1723,38 +1723,37 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+ 
+     def load_model(self) -> None:
+         logger.info("Starting to load model %s...", self.model_config.model)
+-        with DeviceMemoryProfiler() as m:  # noqa: SIM117
+-            time_before_load = time.perf_counter()
+-            model_loader = get_model_loader(self.load_config)
+-            if not hasattr(self, "model"):
+-                logger.info("Loading model from scratch...")
+-                self.model = model_loader.load_model(
+-                    vllm_config=self.vllm_config,
+-                    model_config=self.model_config)
+-            else:
+-                logger.info(
+-                    "Model was already initialized. Loading weights inplace..."
+-                )
+-                model_loader.load_weights(self.model,
+-                                          model_config=self.model_config)
+-            if has_step_pooler(self.model):
+-                self.input_batch.logits_processing_needs_token_ids = True
+-            if self.lora_config:
+-                self.model = self.load_lora_model(self.model,
+-                                                  self.model_config,
+-                                                  self.scheduler_config,
+-                                                  self.lora_config,
+-                                                  self.device)
+-            if hasattr(self, "drafter"):
+-                logger.info("Loading drafter model...")
+-                self.drafter.load_model(self.model)
+-            if self.use_aux_hidden_state_outputs:
+-                self.model.set_aux_hidden_state_layers(
+-                    self.model.get_eagle3_aux_hidden_state_layers())
+-            time_after_load = time.perf_counter()
+-        self.model_memory_usage = m.consumed_memory
+-        logger.info("Model loading took %.4f GiB and %.6f seconds",
+-                    self.model_memory_usage / GiB_bytes,
++        # with DeviceMemoryProfiler() as m:  # noqa: SIM117
++        time_before_load = time.perf_counter()
++        model_loader = get_model_loader(self.load_config)
++        if not hasattr(self, "model"):
++            logger.info("Loading model from scratch...")
++            self.model = model_loader.load_model(
++                vllm_config=self.vllm_config,
++                model_config=self.model_config)
++        else:
++            logger.info(
++                "Model was already initialized. Loading weights inplace..."
++            )
++            model_loader.load_weights(self.model,
++                                        model_config=self.model_config)
++        if has_step_pooler(self.model):
++            self.input_batch.logits_processing_needs_token_ids = True
++        if self.lora_config:
++            self.model = self.load_lora_model(self.model,
++                                                self.model_config,
++                                                self.scheduler_config,
++                                                self.lora_config,
++                                                self.device)
++        if hasattr(self, "drafter"):
++            logger.info("Loading drafter model...")
++            self.drafter.load_model(self.model)
++        if self.use_aux_hidden_state_outputs:
++            self.model.set_aux_hidden_state_layers(
++                self.model.get_eagle3_aux_hidden_state_layers())
++        time_after_load = time.perf_counter()
++        # self.model_memory_usage = m.consumed_memory
++        logger.info("Model loading took %.6f seconds",
+                     time_after_load - time_before_load)
+         prepare_communication_buffer_for_model(self.model)
+ 
+-- 
+2.43.0
+

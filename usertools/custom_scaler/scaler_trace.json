@@ -1,0 +1,6 @@
+[
+    {"model_name": "meta-llama/Llama-3.1-8B::prefill", "instance_needed": 1},
+    {"model_name": "meta-llama/Llama-3.1-8B::decode", "instance_needed": 1},
+    {"model_name": "meta-llama/Llama-3.1-8B::decode", "instance_needed": 0},
+    {"model_name": "meta-llama/Llama-3.1-8B::decode", "instance_needed": 1}
+]

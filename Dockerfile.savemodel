@@ -1,0 +1,62 @@
+FROM pytorch/pytorch:2.5.1-cuda12.1-cudnn9-devel AS sllm-builder
+ENV DEBIAN_FRONTEND=noninteractive
+
+WORKDIR /app
+RUN apt-get update && apt-get install -y git curl
+RUN apt-get update && apt-get install -y build-essential
+
+# Install uv
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
+# Increase timeout for huge CUDA wheels
+ENV UV_HTTP_TIMEOUT=300
+
+ARG SLLM_VERSION=manual_v0.5
+RUN git clone --branch lrq/vllm_v0_11_2_support https://github.com/ServerlessLLM/ServerlessLLM.git
+
+WORKDIR /app/ServerlessLLM/sllm_store
+
+# Use uv with --system so it installs into the system Python
+RUN uv pip install --system -r requirements.txt
+RUN uv pip install --system -r requirements-build.txt
+RUN uv pip install --system setuptools wheel
+
+# Build the wheel
+RUN python3 setup.py bdist_wheel
+
+
+# -------------------------
+#        Run Stage
+# -------------------------
+FROM pytorch/pytorch:2.5.1-cuda12.1-cudnn9-runtime
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y build-essential curl
+
+# Install uv
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
+# Increase timeout for huge CUDA wheels
+ENV UV_HTTP_TIMEOUT=300
+
+# Copy wheel + patches
+COPY --from=sllm-builder /app/ServerlessLLM/sllm_store/dist /app/sllm_store/dist
+COPY --from=sllm-builder /app/ServerlessLLM/sllm_store/vllm_patch /app/sllm_store/vllm_patch
+
+# Install wheel using uv (system install)
+RUN uv pip install --system /app/sllm_store/dist/*.whl
+
+# Install vLLM
+RUN uv pip install --system vllm==0.11.2
+
+# Apply patch
+RUN /app/sllm_store/vllm_patch/patch.sh
+
+# Your script
+COPY model_save/save_model.py /app/save_model.py
+
+# Additional deps
+RUN uv pip install --system addict easydict
+
+ENTRYPOINT ["python3", "/app/save_model.py"]
+CMD ["--model-name", "facebook/opt-125m", "--dtype", "float16"]

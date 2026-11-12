@@ -1,0 +1,31 @@
+{
+  "model_name": "Qwen/Qwen2.5-VL-7B-Instruct",
+  "cli": "vllm",
+  "env": [
+    "VLLM_USE_V1=1",
+    "VLLM_ENABLE_V1_MULTIPROCESSING=1",
+    "VLLM_HTTP_TIMEOUT_KEEP_ALIVE=120",
+    "VLLM_WORKER_MULTIRPOC_METHOD=spawn",
+    "VLLM_KVC_MEM_GB=20",
+    "LMCACHE_TRACK_USAGE=false"
+  ],
+  "args": [
+    "serve",
+    "/models/Qwen/Qwen2.5-VL-7B-Instruct",
+    "--gpu-memory-utilization",
+    "0.9",
+    "--load-format",
+    "serverless_llm",
+    "--served-model-name",
+    "Qwen/Qwen2.5-VL-7B-Instruct",
+    "--enable-chunked-prefill",
+    "--max-num-batched-token",
+    "1024",
+    "--no-enable-prefix-caching",
+    "--enforce-eager"
+  ],
+  "tp_arg": "--tensor-parallel-size",
+  "host_arg": "--host",
+  "port_arg": "--port",
+  "autoscaler_config_path": "autoscale_configs/default_autoscale_config.json"
+}

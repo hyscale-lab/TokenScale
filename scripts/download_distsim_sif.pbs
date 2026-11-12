@@ -1,0 +1,16 @@
+#!/bin/bash
+#PBS -l select=1:ngpus=1
+#PBS -l walltime=02:00:00
+#PBS -j oe
+#PBS -N download_distsim_sif
+#PBS -o ./logs/download_distsim.log
+
+SIF_PATH="/scratch/users/ntu/$USER/sif_images/distsim.sif"
+
+if [ -f "$SIF_PATH" ]; then
+    rm "$SIF_PATH"
+fi
+
+module load singularity
+export SINGULARITY_CACHEDIR=/scratch/users/ntu/$USER/.singularity
+singularity pull "$SIF_PATH" docker://lrq619/distsim

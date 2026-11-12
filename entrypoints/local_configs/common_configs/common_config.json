@@ -1,0 +1,22 @@
+{
+    "router_port": 8889,
+    "router_metrics_port": 9091,
+    "prom_web_port": 9090,
+    "zmq_port": 7500,
+    "route_policy": "RR",
+    "router_tmp_dir_path": "/tmp",
+    "sif_images_path": "/mnt/network_drive/sif_images",
+    "sqsh_images_path": "/mnt/network_drive/shared_models",
+    "model_path": "/mnt/network_drive/shared_models",
+    "memory_pool_size": 32,
+    "log_path": "/path/to/data/logs",
+    "worker_port": 9010,
+    "fork_server_port": 48888,
+    "wait_min": 5,
+    "nscc_nodes": 1,
+    "hostnames": ["localhost"],
+    "nscc_private_key_path": "/path/to/.ssh/id_rsa",
+    "update_target_rps": "distserve",
+    "router_disable_autoscaler": "",
+    "serving_mode": "online"
+}

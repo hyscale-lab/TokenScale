@@ -1,0 +1,38 @@
+{
+  "model_name": "meta-llama/Llama-3.1-8B::prefill",
+  "cli": "vllm",
+  "env": [
+    "MOONCAKE_CONFIG_PATH=/app/mooncake_prefill.json",
+    "VLLM_USE_V1=0",
+    "VLLM_NO_USAGE_STATS=1"
+  ],
+  "args": [
+    "serve",
+    "/models/meta-llama/Llama-3.1-8B",
+    "--gpu-memory-utilization",
+    "0.8",
+    "--load-format",
+    "serverless_llm",
+    "--served-model-name",
+    "meta-llama/Llama-3.1-8B",
+    "--max-model-len",
+    "10240",
+    "--max-num-batched-tokens",
+    "10240",
+    "--no-enable-chunked-prefill",
+    "--kv-transfer-config",
+    "{\"kv_connector\":\"MooncakeStoreConnector\",\"kv_role\":\"kv_producer\"}"
+  ],
+  "tp_arg": "--tensor-parallel-size",
+  "host_arg": "--host",
+  "port_arg": "--port",
+  "autoscaler_config": {
+      "type": "DEFAULT",
+      "tp_level": 1,
+      "max_request_per_instance": 33,
+      "min_instance": 1,
+      "max_instance": 1,
+      "min_life_time": 0,
+      "scale_down_to_zero_grace_period": 30
+  }
+}

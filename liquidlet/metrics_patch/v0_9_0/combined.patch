@@ -1,0 +1,188 @@
+From 69399ec13321da1e220e7c25910b58ef888b3a7f Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Sat, 31 May 2025 12:41:56 +0000
+Subject: [PATCH] openai_entrypoint
+
+---
+ vllm/entrypoints/openai/api_server.py         | 2 +-
+ vllm/entrypoints/openai/protocol.py           | 4 +++-
+ vllm/entrypoints/openai/serving_completion.py | 7 +++++--
+ 3 files changed, 9 insertions(+), 4 deletions(-)
+
+diff --git a/vllm/entrypoints/openai/api_server.py b/vllm/entrypoints/openai/api_server.py
+index 2da89b4f5..12445ac43 100644
+--- a/vllm/entrypoints/openai/api_server.py
++++ b/vllm/entrypoints/openai/api_server.py
+@@ -101,7 +101,7 @@ from vllm.utils import (Device, FlexibleArgumentParser, get_open_zmq_ipc_path,
+                         is_valid_ipv6_address, set_ulimit)
+ from vllm.version import __version__ as VLLM_VERSION
+ 
+-TIMEOUT_KEEP_ALIVE = 5  # seconds
++TIMEOUT_KEEP_ALIVE = 120  # seconds
+ 
+ prometheus_multiproc_dir: tempfile.TemporaryDirectory
+ 
+diff --git a/vllm/entrypoints/openai/protocol.py b/vllm/entrypoints/openai/protocol.py
+index 393cf381b..1e173302d 100644
+--- a/vllm/entrypoints/openai/protocol.py
++++ b/vllm/entrypoints/openai/protocol.py
+@@ -5,7 +5,7 @@
+ import json
+ import time
+ from http import HTTPStatus
+-from typing import Annotated, Any, ClassVar, Literal, Optional, Union
++from typing import Annotated, Any, ClassVar, Literal, Optional, Union, List
+ 
+ import regex as re
+ import torch
+@@ -23,6 +23,7 @@ from vllm.sampling_params import (BeamSearchParams, GuidedDecodingParams,
+                                   RequestOutputKind, SamplingParams)
+ from vllm.sequence import Logprob
+ from vllm.utils import random_uuid, resolve_obj_by_qualname
++from vllm.sequence import RequestMetrics
+ 
+ logger = init_logger(__name__)
+ 
+@@ -1243,6 +1244,7 @@ class CompletionResponse(OpenAIBaseModel):
+     model: str
+     choices: list[CompletionResponseChoice]
+     usage: UsageInfo
++    metrics_list: List[RequestMetrics]
+     kv_transfer_params: Optional[dict[str, Any]] = Field(
+         default=None, description="KVTransfer parameters.")
+ 
+diff --git a/vllm/entrypoints/openai/serving_completion.py b/vllm/entrypoints/openai/serving_completion.py
+index 7beaae287..86419eac5 100644
+--- a/vllm/entrypoints/openai/serving_completion.py
++++ b/vllm/entrypoints/openai/serving_completion.py
+@@ -4,7 +4,7 @@ import asyncio
+ import time
+ from collections.abc import AsyncGenerator, AsyncIterator
+ from collections.abc import Sequence as GenericSequence
+-from typing import Optional, Union, cast
++from typing import Optional, Union, cast, List
+ 
+ import jinja2
+ from fastapi import Request
+@@ -37,6 +37,7 @@ from vllm.sampling_params import BeamSearchParams, SamplingParams
+ from vllm.sequence import Logprob
+ from vllm.transformers_utils.tokenizer import AnyTokenizer
+ from vllm.utils import merge_async_iterators
++from vllm.sequence import RequestMetrics
+ 
+ logger = init_logger(__name__)
+ 
+@@ -437,8 +438,9 @@ class OpenAIServingCompletion(OpenAIServing):
+         choices: list[CompletionResponseChoice] = []
+         num_prompt_tokens = 0
+         num_generated_tokens = 0
+-
++        metrics_list: List[RequestMetrics]= []
+         for final_res in final_res_batch:
++            metrics_list.append(final_res.metrics)
+             prompt_token_ids = final_res.prompt_token_ids
+             assert prompt_token_ids is not None
+             prompt_logprobs = clamp_prompt_logprobs(final_res.prompt_logprobs)
+@@ -515,6 +517,7 @@ class OpenAIServingCompletion(OpenAIServing):
+             model=model_name,
+             choices=choices,
+             usage=usage,
++            metrics_list=metrics_list,
+             kv_transfer_params=final_res_batch[0].kv_transfer_params)
+ 
+     def _create_completion_logprobs(
+-- 
+2.25.1
+
+From a362eccdf9ce08822214adcaafdb1e03f036d6b9 Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Tue, 17 Jun 2025 08:58:57 +0000
+Subject: [PATCH 2/2] log failed kv recv
+
+---
+ vllm/worker/model_runner.py | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/vllm/worker/model_runner.py b/vllm/worker/model_runner.py
+index 8c968faa7..de965183e 100644
+--- a/vllm/worker/model_runner.py
++++ b/vllm/worker/model_runner.py
+@@ -1823,6 +1823,11 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
+                     kv_caches=kv_caches
+                 )
+ 
++            if not bypass_model_exec:
++                assert model_input.is_prompt, "model input is not prompt!"
++                for request_id, _ in model_input.request_ids_to_seq_ids.items():
++                    logger.info(f"[KV-transfer] request recv kv failed!: {request_id}")
++
+         multi_modal_kwargs = model_input.multi_modal_kwargs or {}
+         seqlen_agnostic_kwargs = {
+             "finished_requests_ids": model_input.finished_requests_ids,
+-- 
+2.25.1
+
+From 663995dba6d0493e5bf6a87fa41627f40d5cf490 Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Sat, 21 Jun 2025 11:57:44 +0000
+Subject: [PATCH 4/4] v1 metrics
+
+---
+ vllm/v1/engine/output_processor.py | 26 ++++++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+diff --git a/vllm/v1/engine/output_processor.py b/vllm/v1/engine/output_processor.py
+index 293c291b4..932c113ad 100644
+--- a/vllm/v1/engine/output_processor.py
++++ b/vllm/v1/engine/output_processor.py
+@@ -15,6 +15,8 @@ from vllm.v1.engine.logprobs import LogprobsProcessor
+ from vllm.v1.engine.parallel_sampling import ParentRequest
+ from vllm.v1.metrics.stats import (IterationStats, LoRARequestStates,
+                                    RequestStateStats)
++from vllm.sequence import RequestMetrics
++import time
+ 
+ 
+ class RequestOutputCollector:
+@@ -187,6 +189,9 @@ class RequestState:
+         else:
+             prompt_logprobs = self.logprobs_processor.prompt_logprobs
+ 
++        if finished:
++            metrics: RequestMetrics = self._convert_stats_to_metrics()
++
+         return RequestOutput(
+             request_id=request_id,
+             prompt=self.prompt,
+@@ -196,7 +201,28 @@ class RequestState:
+             finished=finished,
+             kv_transfer_params=kv_transfer_params,
+             num_cached_tokens=num_cached_tokens,
++            metrics=metrics
++        )
++
++    def _convert_stats_to_metrics(self) -> RequestMetrics:
++        
++        queued_time = self.stats.scheduled_ts - self.stats.queued_ts
++
++        # Prefill interval is from first SCHEDULED to first NEW_TOKEN
++        # Any preemptions during prefill is included in the interval
++        prefill_time = self.stats.first_token_ts - self.stats.scheduled_ts
++
++        # Decode interval is from first NEW_TOKEN to last NEW_TOKEN
++        # Any preemptions during decode are included
++        metrics = RequestMetrics(
++            arrival_time=self.stats.arrival_time,
++            last_token_time=0,
++            first_scheduled_time=self.stats.arrival_time + queued_time,
++            time_in_queue=queued_time,
++            first_token_time=self.stats.arrival_time+queued_time+prefill_time,
++            finished_time=time.time()
+         )
++        return metrics
+ 
+     def _new_completion_output(
+         self,
+-- 
+2.25.1
+

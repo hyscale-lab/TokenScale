@@ -1,0 +1,9 @@
+{
+    "loadgen_configs/loadgen_config.json::sampling_rate": [5],
+    "common_configs/common_config.json::wait_min": [5],
+    "autoscale_configs/default_prefill_config.json::min_instance": [1],
+    "autoscale_configs/default_prefill_config.json::max_instance": [1],
+    "autoscale_configs/default_decode_config.json::min_instance": [1],
+    "autoscale_configs/default_decode_config.json::max_instance": [1],
+    "pd_configs/pd.json::pd_mode":["lmcache"]
+}

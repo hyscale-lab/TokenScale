@@ -1,0 +1,34 @@
+{
+  "model_name": "Qwen/Qwen2.5-32B::decode",
+  "cli": "vllm",
+  "env": [
+    "UCX_TLS=rc,cuda_ipc,cuda_copy",
+    "UCX_SOCKADDR_TLS_PRIORITY=rdmacm",
+    "VLLM_ENABLE_V1_MULTIPROCESSING=1",
+    "VLLM_HTTP_TIMEOUT_KEEP_ALIVE=300",
+    "VLLM_WORKER_MULTIRPOC_METHOD=spawn",
+    "VLLM_KVC_MEM_GB=4",
+    "LMCACHE_TRACK_USAGE=false",
+    "LMCACHE_LOG_LEVEL=DEBUG",
+    "PYTHONHASHSEED=0"
+  ],
+  "args": [
+    "serve",
+    "Qwen/Qwen2.5-32B",
+    "--gpu-memory-utilization",
+    "0.1",
+    "--max-num-batched-tokens",
+    "10240",
+    "--max-model-len",
+    "10240",
+    "--max-num-seqs",
+    "38",
+    "--enforce-eager",
+    "--no-enable-prefix-caching"
+  ],
+  "tp_arg": "--tensor-parallel-size",
+  "host_arg": "--host",
+  "port_arg": "--port",
+  "autoscaler_config_path": "autoscale_configs/hpa_autoscale_config.json",
+  "traffic_monitor": true
+}

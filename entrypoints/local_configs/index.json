@@ -1,0 +1,12 @@
+{
+    "project_root_path": "/path/to/Liquid",
+    "config_dir_path": "/path/to/Liquid/entrypoints/local_configs",
+    "common_config_path": "common_configs/common_config.json",
+    "LLMLoadgen_config_path": "loadgen_configs/loadgen_config.json",
+    "pd_config_path": "pd_configs/pd.json",
+    "sidecar_config_path": "sidecar_configs/sidecar_config.json",
+    "model_config_path_list": [ 
+        "model_configs/lmcache/Llama-3.1-8B_prefill.json",
+        "model_configs/lmcache/Llama-3.1-8B_decode.json"
+    ]
+}

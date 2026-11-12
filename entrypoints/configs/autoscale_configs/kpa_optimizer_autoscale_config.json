@@ -1,0 +1,12 @@
+{
+    "type": "KPA_OPTIMIZER",
+    "tp_level": 1,
+    "max_request_per_instance": 33,
+    "min_instance": 1,
+    "max_instance": 4,
+    "min_life_time": 0,
+    "scale_down_to_zero_grace_period": 30,
+    "stable_window_seconds": 30,
+    "optimizer_host": "localhost",
+    "optimizer_port": 8090
+}

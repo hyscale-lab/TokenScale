@@ -1,0 +1,343 @@
+From 5a644b7a810fec9d983721112708d0adbeb10d9a Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Sun, 5 Oct 2025 15:16:03 +0000
+Subject: [PATCH 4/4] coldstart profiles
+
+---
+ vllm/coldstart_profiler.py             | 148 +++++++++++++++++++++++++
+ vllm/coldstart_utils.py                |  46 ++++++++
+ vllm/entrypoints/openai/api_server.py  |  17 +++
+ vllm/v1/executor/multiproc_executor.py |  12 ++
+ 4 files changed, 223 insertions(+)
+ create mode 100644 vllm/coldstart_profiler.py
+ create mode 100644 vllm/coldstart_utils.py
+
+diff --git a/vllm/coldstart_profiler.py b/vllm/coldstart_profiler.py
+new file mode 100644
+index 000000000..1154f259e
+--- /dev/null
++++ b/vllm/coldstart_profiler.py
+@@ -0,0 +1,148 @@
++import time
++import subprocess
++import json
++from collections import OrderedDict
++from typing import Dict
++import os
++
++ENVSTR = "COLDSTART_REPORT_FILEPATH"
++# when disabled, simply do nothing
++class DummyProfiler:
++    def __init__(self, name="root", parent=None, parent_event_name=None, manager=None):
++        self.name = "dummy"
++        pass
++    # ----------- Core Recording Methods -----------
++    def mark(self, name: str):
++        pass
++
++    def fork(self, child_name: str, child_profiler):
++        pass
++
++    def end_fork(self, child):
++        pass
++
++    def report(self) -> str:
++        """Return the formatted report for this profiler and all children."""
++        return f"{ENVSTR} is not set!"
++
++    # ----------- JSON Dump -----------
++
++    def dump_json(self):
++        """Dump full profiler data (hierarchy + events + GPU) to JSON."""
++        pass
++        
++
++class ColdstartProfiler:
++    def __init__(self, name="root", parent=None, parent_event_name=None, manager=None):
++        self.name = name
++        self.parent = parent
++        self.parent_event_name = parent_event_name
++
++        if manager is None:
++            raise ValueError("ColdstartProfiler requires a manager instance")
++
++        self.events = manager.dict()
++        self.children = manager.list()
++
++    # ----------- GPU Memory Snapshot -----------
++    def _get_gpu_memory(self):
++        try:
++            output = subprocess.check_output(
++                [
++                    "nvidia-smi",
++                    "--query-gpu=index,memory.used,memory.total",
++                    "--format=csv,noheader,nounits",
++                ],
++                text=True,
++            )
++            gpu_usage = {}
++            for line in output.strip().split("\n"):
++                idx, used, total = [x.strip() for x in line.split(",")]
++                gpu_usage[int(idx)] = {
++                    "used_MB": float(used),
++                    "total_MB": float(total),
++                }
++            return gpu_usage
++        except Exception as e:
++            return {"error": str(e)}
++
++    # ----------- Core Recording Methods -----------
++    def mark(self, name: str):
++        """Record a named event with timestamp and GPU usage."""
++        t = time.time()
++        gpu_usage = self._get_gpu_memory()
++        self.events[name] = {"time": t, "gpu_usage": gpu_usage}
++
++    def fork(self, child_name: str, child_profiler):
++        """Fork a new child time axis. The child starts from the current time."""
++        self.children.append(child_profiler)
++        # mark fork start in parent
++        self.mark(f"fork_{child_name}_begin")
++        # initialize child's first event
++        child_profiler.mark("start")
++
++    def end_fork(self, child):
++        """Mark the end of a child axis in the parent timeline."""
++        self.mark(f"fork_{child.name}_end")
++
++    # ----------- Reporting -----------
++    def _generate_report(self, indent=0) -> str:
++        prefix = "  " * indent
++        lines = []
++
++        names = list(self.events.keys())
++        times = [self.events[n]["time"] for n in names] if self.events else []
++
++        if len(times) >= 2:
++            total_time = times[-1] - times[0]
++            lines.append(f"{prefix}----{{{self.name}: e2e_latency:{total_time:.3f} second}}----")
++
++            for i in range(1, len(names)):
++                delta = times[i] - times[i - 1]
++                perc = (delta / total_time) * 100
++
++                # Retrieve GPU usage for the "after" event
++                gpu_info = self.events[names[i]].get("gpu_usage", {})
++                if isinstance(gpu_info, dict) and "error" not in gpu_info:
++                    gpu_summary = ", ".join(
++                        [f"GPU{gid}: {v['used_MB']/1024:.2f}GB/{v['total_MB']/1024:.2f}GB"
++                         for gid, v in gpu_info.items()]
++                    )
++                    gpu_summary = f"[{gpu_summary}]"
++                else:
++                    gpu_summary = "unavailable"
++
++                lines.append(
++                    f"({perc:5.1f}%) {prefix}{names[i-1]} → {names[i]}: "
++                    f"{delta:.3f} sec | GPU usage: {gpu_summary}"
++                )
++        else:
++            lines.append(f"{prefix}----{{{self.name}: insufficient events}}----")
++
++        # Recursively include child summaries
++        for child in self.children:
++            lines.append("")  # spacing
++            lines.append(child._generate_report(indent=indent + 1))
++
++        return "\n".join(lines)
++
++    def report(self) -> str:
++        """Return the formatted report for this profiler and all children."""
++        return self._generate_report()
++
++    # ----------- JSON Dump -----------
++    def _serialize(self):
++        events_dict = {k: v for k, v in self.events.items()}
++        data = {
++            "name": self.name,
++            "events": events_dict,
++            "children": [child._serialize() for child in self.children]
++        }
++        return data
++
++    def dump_json(self):
++        filepath = os.getenv(ENVSTR)
++        """Dump full profiler data (hierarchy + events + GPU) to JSON."""
++        with open(filepath, "w") as f:
++            json.dump(self._serialize(), f, indent=2)
++        print(f"[INFO] Profiling data dumped to {filepath}")
+diff --git a/vllm/coldstart_utils.py b/vllm/coldstart_utils.py
+new file mode 100644
+index 000000000..6bc8dd44c
+--- /dev/null
++++ b/vllm/coldstart_utils.py
+@@ -0,0 +1,46 @@
++from vllm.coldstart_profiler import ColdstartProfiler, DummyProfiler, ENVSTR
++from multiprocessing import Manager
++import os
++from typing import List
++from vllm.logger import init_logger
++logger = init_logger(__name__)
++
++
++MANAGER = None
++PROFILER_MAP = None
++
++def _init_mp_state():
++    global MANAGER, PROFILER_MAP
++    MANAGER = Manager()
++    PROFILER_MAP = MANAGER.dict()
++
++def _create_profiler(name: str = "root") -> ColdstartProfiler:
++    val = os.getenv(ENVSTR)
++    if val is not None:
++        profiler = ColdstartProfiler(name=name, manager=MANAGER)
++    else:
++        profiler = DummyProfiler(name=name, manager=MANAGER)
++    PROFILER_MAP[name] = profiler
++    return profiler
++
++def create_profiler(name: str = "root") -> ColdstartProfiler:
++    _init_mp_state()
++    return _create_profiler(name)
++
++def fork_profiler(name: str, parent_name: str="root") -> ColdstartProfiler:
++    parent_profiler = PROFILER_MAP[parent_name]
++    child_profiler = _create_profiler(name)
++    parent_profiler.fork(name, child_profiler)
++    return child_profiler
++
++def get_profiler(name: str = "root") -> ColdstartProfiler:
++    try:
++        profiler = PROFILER_MAP[name]
++    except Exception as e:
++       logger.error(f"failed to get profiler {name}: current profilers: {PROFILER_MAP.keys()}") 
++       raise e
++    return profiler
++
++def get_profiler_names() -> List[str]:
++    profiler_names = [k for k in PROFILER_MAP.keys()]
++    return profiler_names
+\ No newline at end of file
+diff --git a/vllm/entrypoints/openai/api_server.py b/vllm/entrypoints/openai/api_server.py
+index f3fd15486..379c35b31 100644
+--- a/vllm/entrypoints/openai/api_server.py
++++ b/vllm/entrypoints/openai/api_server.py
+@@ -105,6 +105,7 @@ from vllm.utils import (Device, FlexibleArgumentParser, get_open_zmq_ipc_path,
+                         is_valid_ipv6_address, set_ulimit)
+ from vllm.v1.metrics.prometheus import get_prometheus_registry
+ from vllm.version import __version__ as VLLM_VERSION
++from vllm.coldstart_utils import create_profiler, fork_profiler, get_profiler
+ 
+ prometheus_multiproc_dir: tempfile.TemporaryDirectory
+ 
+@@ -153,7 +154,10 @@ async def build_async_engine_client(
+ 
+     # Context manager to handle engine_client lifecycle
+     # Ensures everything is shutdown and cleaned up on error/exit
++    profiler = get_profiler()
+     engine_args = AsyncEngineArgs.from_cli_args(args)
++    profiler.mark(f"finish_build_engine_args")
++    
+ 
+     async with build_async_engine_client_from_engine_args(
+             engine_args, args.disable_frontend_multiprocessing,
+@@ -176,6 +180,7 @@ async def build_async_engine_client_from_engine_args(
+     """
+ 
+     # Create the EngineConfig (determines if we can use V1).
++    profiler = get_profiler()
+     usage_context = UsageContext.OPENAI_API_SERVER
+     vllm_config = engine_args.create_engine_config(usage_context=usage_context)
+ 
+@@ -199,6 +204,7 @@ async def build_async_engine_client_from_engine_args(
+                 client_addresses=client_config,
+                 client_index=client_index)
+ 
++            profiler.mark(f"finish_init_async_llm")
+             # Don't keep the dummy data in memory
+             await async_llm.reset_mm_cache()
+ 
+@@ -1430,6 +1436,10 @@ async def run_server_worker(listen_address,
+                             client_config=None,
+                             **uvicorn_kwargs) -> None:
+     """Run a single API server worker."""
++    root_profiler = create_profiler()
++    root_profiler.mark("start_run_server_worker")
++    logger.info(f"create_profiler finished")
++
+ 
+     if args.tool_parser_plugin and len(args.tool_parser_plugin) > 3:
+         ToolParserManager.import_tool_parser(args.tool_parser_plugin)
+@@ -1441,14 +1451,21 @@ async def run_server_worker(listen_address,
+     if log_config is not None:
+         uvicorn_kwargs['log_config'] = log_config
+ 
++    root_profiler.mark("start_build_async_engine_client")
+     async with build_async_engine_client(args, client_config) as engine_client:
++        root_profiler.mark("finish_build_async_engine_client")
+         app = build_app(args)
++        root_profiler.mark("finish_build_app")
+ 
+         vllm_config = await engine_client.get_vllm_config()
+         await init_app_state(engine_client, vllm_config, app.state, args)
++        root_profiler.mark("finish_init_app_state")
+ 
+         logger.info("Starting vLLM API server %d on %s", server_index,
+                     listen_address)
++        report = root_profiler.report()
++        root_profiler.dump_json() 
++        logger.info(f"coldstart profiler report: \n{report}")
+         shutdown_task = await serve_http(
+             app,
+             sock=sock,
+diff --git a/vllm/v1/executor/multiproc_executor.py b/vllm/v1/executor/multiproc_executor.py
+index b06b7cc80..c1c2e7969 100644
+--- a/vllm/v1/executor/multiproc_executor.py
++++ b/vllm/v1/executor/multiproc_executor.py
+@@ -34,6 +34,7 @@ from vllm.utils import (get_distributed_init_method, get_mp_context,
+ from vllm.v1.executor.abstract import Executor, FailureCallback
+ from vllm.v1.outputs import ModelRunnerOutput
+ from vllm.worker.worker_base import WorkerWrapperBase
++from vllm.coldstart_utils import create_profiler, fork_profiler, get_profiler, get_profiler_names
+ 
+ logger = init_logger(__name__)
+ 
+@@ -324,6 +325,8 @@ class WorkerProc:
+         distributed_init_method: str,
+         input_shm_handle: Handle,
+     ):
++        profiler = fork_profiler(f"tp={rank}") 
++        profiler.mark("enter_worker_proc")
+         self.rank = rank
+         wrapper = WorkerWrapperBase(vllm_config=vllm_config, rpc_rank=rank)
+         # TODO: move `init_worker` to executor level as a collective rpc call
+@@ -354,8 +357,11 @@ class WorkerProc:
+         self.worker_response_mq = MessageQueue(1, 1)
+ 
+         # Initialize device and loads weights
++        profiler.mark(f"before_init_device")
+         self.worker.init_device()
++        profiler.mark(f"after_init_device")
+         self.worker.load_model()
++        profiler.mark(f"after_load_model")
+ 
+     @staticmethod
+     def make_worker_process(
+@@ -365,7 +371,13 @@ class WorkerProc:
+             distributed_init_method: str,
+             input_shm_handle,  # Receive SchedulerOutput
+     ) -> UnreadyWorkerProcHandle:
++        try:
++            profiler = get_profiler()
++        except Exception as e:
++            profiler = create_profiler()
++        profiler.mark(f"make_worker_process")
+         context = get_mp_context()
++
+         # (reader, writer)
+         reader, writer = context.Pipe(duplex=False)
+ 
+-- 
+2.43.0
+

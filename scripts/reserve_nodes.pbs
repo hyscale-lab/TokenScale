@@ -1,0 +1,12 @@
+#!/bin/bash
+#PBS -l walltime=02:00:01
+#PBS -j oe
+#PBS -o ./logs/reserve_output.log
+
+echo "Running on nodes: $(cat $PBS_NODEFILE)"
+
+while true; do
+    echo "Still alive at $(date)" 
+    awk 'BEGIN { for(i=0;i<1e6;i++) x=sin(i) }'
+    sleep 60  
+done

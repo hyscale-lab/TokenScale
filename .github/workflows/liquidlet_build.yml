@@ -1,0 +1,31 @@
+name: Build and Push Liquidlet Docker Image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'liquidlet/**'      # Only trigger if files under this folder changed
+      - '.github/workflows/liquidlet_build.yml'  # Optional: allow manual testing by editing the workflow itself
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Delete huge unnecessary tools folder
+        run: rm -rf /opt/hostedtoolcache
+
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: lrq619
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build Docker image
+        run: docker build -f Dockerfile.liquidlet -t lrq619/liquidlet .
+
+      - name: Push Docker image
+        run: docker push lrq619/liquidlet

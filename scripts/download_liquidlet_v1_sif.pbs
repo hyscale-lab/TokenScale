@@ -1,0 +1,11 @@
+#!/bin/bash
+#PBS -l select=1:ngpus=1
+#PBS -l walltime=02:00:00
+#PBS -j oe
+#PBS -N download_liquidlet_sif
+#PBS -o ./logs/download_liquidlet.log
+
+rm /scratch/users/ntu/$USER/sif_images/liquidlet_v1.sif
+module load singularity
+export SINGULARITY_CACHEDIR=/scratch/users/ntu/$USER/.singularity
+singularity pull /scratch/users/ntu/$USER/sif_images/liquidlet_v1.sif docker://lrq619/liquidlet_v1:latest

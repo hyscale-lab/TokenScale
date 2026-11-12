@@ -1,0 +1,3 @@
+{
+    "loadgen_configs/loadgen_config.json::sampling_rate": [10,20,30]
+}

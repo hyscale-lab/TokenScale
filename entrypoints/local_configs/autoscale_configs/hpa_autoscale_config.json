@@ -1,0 +1,12 @@
+{
+    "type": "HPA",
+    "tp_level": 1,
+    "prom_metric": "vllm:gpu_cache_usage_perc * 100",
+    "min_instance": 1,
+    "max_instance": 16,
+    "target_utilization": 10,
+    "sampling_interval": 5,
+    "stabilization_window_seconds": 30,
+    "up_tolerance": 0,
+    "down_tolerance": 0
+}

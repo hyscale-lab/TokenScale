@@ -1,0 +1,10 @@
+#!/bin/bash
+#PBS -l select=1:ngpus=1
+#PBS -l walltime=01:00:00
+#PBS -j oe
+#PBS -N download_prometheus
+#PBS -o ./logs/download_prometheus.log
+
+module load singularity
+export SINGULARITY_CACHEDIR=/scratch/users/ntu/$USER/.singularity
+singularity pull /scratch/users/ntu/$USER/sif_images/prometheus_v3.2.1.sif docker://prom/prometheus:v3.2.1

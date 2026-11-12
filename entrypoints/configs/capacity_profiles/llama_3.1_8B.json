@@ -1,0 +1,24 @@
+{
+    "input_buckets": [256, 1024, 8192],
+    "output_buckets": [16, 128, 256, 384, 512],
+    "capacity_map": {
+        "input256_output16": 130096.1,
+        "input256_output128": 23535.0,
+        "input256_output256": 10982.4,
+        "input256_output384": 8146.0,
+        "input256_output512": 5138.0,
+        "input1024_output16": 203809.8,
+        "input1024_output128": 33106.0,
+        "input1024_output256": 11669.3,
+        "input1024_output384": 9794.0,
+        "input1024_output512": 5766.0,
+        "input8192_output16": 247116.4,
+        "input8192_output128": 39551.0,
+        "input8192_output256": 12531.2,
+        "input8192_output384":11310.0,
+        "input8192_output512":6495.0
+    },
+    "prefill": 14000,
+    "convertible_prefill": 11000
+}
+    

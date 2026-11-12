@@ -1,0 +1,21 @@
+FROM python:3.12-slim AS final
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git curl build-essential redis-server && \
+    rm -rf /var/lib/apt/lists/*
+
+# Clone and install AIBrix
+RUN git clone --branch aibrix-liquid https://github.com/lhr-30/aibrix-liquid.git && \
+    cd aibrix-liquid && git pull
+RUN pip install -e ./aibrix-liquid/python/aibrix
+
+# Copy entrypoint script
+COPY ./aibrix_entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+# Optional: expose ports
+EXPOSE 6379 8090
+
+ENTRYPOINT ["/app/entrypoint.sh"]

@@ -1,0 +1,322 @@
+From 2d9da7023523ecb7df18a276616ecd36886dae67 Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Sat, 31 May 2025 12:41:56 +0000
+Subject: [PATCH 1/4] openai_entrypoint
+
+---
+ vllm/entrypoints/openai/api_server.py         | 2 ++
+ vllm/entrypoints/openai/protocol.py           | 4 +++-
+ vllm/entrypoints/openai/serving_completion.py | 7 +++++--
+ 3 files changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/vllm/entrypoints/openai/api_server.py b/vllm/entrypoints/openai/api_server.py
+index f3fd15486..514d072cc 100644
+--- a/vllm/entrypoints/openai/api_server.py
++++ b/vllm/entrypoints/openai/api_server.py
+@@ -106,6 +106,8 @@ from vllm.utils import (Device, FlexibleArgumentParser, get_open_zmq_ipc_path,
+ from vllm.v1.metrics.prometheus import get_prometheus_registry
+ from vllm.version import __version__ as VLLM_VERSION
+ 
++TIMEOUT_KEEP_ALIVE = 120  # seconds
++
+ prometheus_multiproc_dir: tempfile.TemporaryDirectory
+ 
+ # Cannot use __name__ (https://github.com/vllm-project/vllm/pull/4765)
+diff --git a/vllm/entrypoints/openai/protocol.py b/vllm/entrypoints/openai/protocol.py
+index 3b5281962..ae9609c6d 100644
+--- a/vllm/entrypoints/openai/protocol.py
++++ b/vllm/entrypoints/openai/protocol.py
+@@ -6,7 +6,7 @@
+ import json
+ import time
+ from http import HTTPStatus
+-from typing import Annotated, Any, ClassVar, Literal, Optional, Union
++from typing import Annotated, Any, ClassVar, Literal, Optional, Union, List
+ 
+ import regex as re
+ import torch
+@@ -24,6 +24,7 @@ from vllm.sampling_params import (BeamSearchParams, GuidedDecodingParams,
+                                   RequestOutputKind, SamplingParams)
+ from vllm.sequence import Logprob
+ from vllm.utils import random_uuid, resolve_obj_by_qualname
++from vllm.sequence import RequestMetrics
+ 
+ logger = init_logger(__name__)
+ 
+@@ -1278,6 +1279,7 @@ class CompletionResponse(OpenAIBaseModel):
+     model: str
+     choices: list[CompletionResponseChoice]
+     usage: UsageInfo
++    metrics_list: List[RequestMetrics]
+     kv_transfer_params: Optional[dict[str, Any]] = Field(
+         default=None, description="KVTransfer parameters.")
+ 
+diff --git a/vllm/entrypoints/openai/serving_completion.py b/vllm/entrypoints/openai/serving_completion.py
+index a19fde8d7..bbff5c029 100644
+--- a/vllm/entrypoints/openai/serving_completion.py
++++ b/vllm/entrypoints/openai/serving_completion.py
+@@ -5,7 +5,7 @@ import asyncio
+ import time
+ from collections.abc import AsyncGenerator, AsyncIterator
+ from collections.abc import Sequence as GenericSequence
+-from typing import Optional, Union, cast
++from typing import Optional, Union, cast, List
+ 
+ import jinja2
+ from fastapi import Request
+@@ -38,6 +38,7 @@ from vllm.sampling_params import BeamSearchParams, SamplingParams
+ from vllm.sequence import Logprob
+ from vllm.transformers_utils.tokenizer import AnyTokenizer
+ from vllm.utils import merge_async_iterators
++from vllm.sequence import RequestMetrics
+ 
+ logger = init_logger(__name__)
+ 
+@@ -444,8 +445,9 @@ class OpenAIServingCompletion(OpenAIServing):
+         choices: list[CompletionResponseChoice] = []
+         num_prompt_tokens = 0
+         num_generated_tokens = 0
+-
++        metrics_list: List[RequestMetrics]= []
+         for final_res in final_res_batch:
++            metrics_list.append(final_res.metrics)
+             prompt_token_ids = final_res.prompt_token_ids
+             assert prompt_token_ids is not None
+             prompt_logprobs = clamp_prompt_logprobs(final_res.prompt_logprobs)
+@@ -522,6 +524,7 @@ class OpenAIServingCompletion(OpenAIServing):
+             model=model_name,
+             choices=choices,
+             usage=usage,
++            metrics_list=metrics_list,
+             kv_transfer_params=final_res_batch[0].kv_transfer_params)
+ 
+     def _create_completion_logprobs(
+-- 
+2.25.1
+
+From c95d1d43cac4dc33effcc22a75a1c3a41c6ea36c Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Tue, 17 Jun 2025 08:58:57 +0000
+Subject: [PATCH 2/4] log failed kv recv
+
+---
+ vllm/worker/model_runner.py | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/vllm/worker/model_runner.py b/vllm/worker/model_runner.py
+index 82db6617b..3d6f7d9be 100644
+--- a/vllm/worker/model_runner.py
++++ b/vllm/worker/model_runner.py
+@@ -1824,6 +1824,11 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
+                     kv_caches=kv_caches
+                 )
+ 
++            if not bypass_model_exec:
++                assert model_input.is_prompt, "model input is not prompt!"
++                for request_id, _ in model_input.request_ids_to_seq_ids.items():
++                    logger.info(f"[KV-transfer] request recv kv failed!: {request_id}")
++
+         multi_modal_kwargs = model_input.multi_modal_kwargs or {}
+         seqlen_agnostic_kwargs = {
+             "finished_requests_ids": model_input.finished_requests_ids,
+-- 
+2.25.1
+
+From 0809785927f063e7b8b70230f0422eb09ed5bcaa Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Sat, 21 Jun 2025 11:57:44 +0000
+Subject: [PATCH 4/4] v1 metrics
+
+---
+ vllm/v1/engine/output_processor.py | 27 +++++++++++++++++++++++++++
+ 1 file changed, 27 insertions(+)
+
+diff --git a/vllm/v1/engine/output_processor.py b/vllm/v1/engine/output_processor.py
+index 2bcd61d1f..d161cdad7 100644
+--- a/vllm/v1/engine/output_processor.py
++++ b/vllm/v1/engine/output_processor.py
+@@ -19,6 +19,8 @@ from vllm.v1.engine.logprobs import LogprobsProcessor
+ from vllm.v1.engine.parallel_sampling import ParentRequest
+ from vllm.v1.metrics.stats import (IterationStats, LoRARequestStates,
+                                    RequestStateStats)
++from vllm.sequence import RequestMetrics
++import time
+ 
+ 
+ class RequestOutputCollector:
+@@ -221,6 +223,10 @@ class RequestState:
+         else:
+             prompt_logprobs = self.logprobs_processor.prompt_logprobs
+ 
++        metrics = None
++        if finished:
++            metrics: RequestMetrics = self._convert_stats_to_metrics()
++
+         return RequestOutput(
+             request_id=request_id,
+             prompt=self.prompt,
+@@ -230,7 +236,28 @@ class RequestState:
+             finished=finished,
+             kv_transfer_params=kv_transfer_params,
+             num_cached_tokens=num_cached_tokens,
++            metrics=metrics
++        )
++
++    def _convert_stats_to_metrics(self) -> RequestMetrics:
++        
++        queued_time = self.stats.scheduled_ts - self.stats.queued_ts
++
++        # Prefill interval is from first SCHEDULED to first NEW_TOKEN
++        # Any preemptions during prefill is included in the interval
++        prefill_time = self.stats.first_token_ts - self.stats.scheduled_ts
++
++        # Decode interval is from first NEW_TOKEN to last NEW_TOKEN
++        # Any preemptions during decode are included
++        metrics = RequestMetrics(
++            arrival_time=self.stats.arrival_time,
++            last_token_time=0,
++            first_scheduled_time=self.stats.arrival_time + queued_time,
++            time_in_queue=queued_time,
++            first_token_time=self.stats.arrival_time+queued_time+prefill_time,
++            finished_time=time.time()
+         )
++        return metrics
+ 
+     def _new_completion_output(
+         self,
+-- 
+2.25.1
+
+From a8242b58a78fe51c5e2b5378576dd23fb27d4d5a Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Wed, 9 Jul 2025 13:38:30 +0000
+Subject: [PATCH 5/5] coldstart
+
+---
+ vllm/entrypoints/utils.py              |  2 +-
+ vllm/model_executor/models/registry.py | 85 +++++++++++++++++++-------
+ 2 files changed, 63 insertions(+), 24 deletions(-)
+
+diff --git a/vllm/entrypoints/utils.py b/vllm/entrypoints/utils.py
+index 16ba2b453..b3124a075 100644
+--- a/vllm/entrypoints/utils.py
++++ b/vllm/entrypoints/utils.py
+@@ -148,7 +148,7 @@ def cli_env_setup():
+     # - https://docs.habana.ai/en/latest/PyTorch/Getting_Started_with_PyTorch_and_Gaudi/Getting_Started_with_PyTorch.html?highlight=multiprocessing#torch-multiprocessing-for-dataloaders
+     if "VLLM_WORKER_MULTIPROC_METHOD" not in os.environ:
+         logger.debug("Setting VLLM_WORKER_MULTIPROC_METHOD to 'spawn'")
+-        os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
++        os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "fork"
+ 
+ 
+ def _validate_truncation_size(
+diff --git a/vllm/model_executor/models/registry.py b/vllm/model_executor/models/registry.py
+index ff605cae0..2c53fe207 100644
+--- a/vllm/model_executor/models/registry.py
++++ b/vllm/model_executor/models/registry.py
+@@ -15,6 +15,7 @@ from collections.abc import Set
+ from dataclasses import dataclass, field
+ from functools import lru_cache
+ from typing import Callable, Optional, TypeVar, Union
++import multiprocessing
+ 
+ import cloudpickle
+ import torch.nn as nn
+@@ -582,33 +583,71 @@ ModelRegistry = _ModelRegistry({
+ })
+ 
+ _T = TypeVar("_T")
+-
++def _worker_function(serialized_data):
++    """Worker function that runs in the forked process"""
++    fn, output_filepath = cloudpickle.loads(serialized_data)
++    try:
++        result = fn()
++        with open(output_filepath, "wb") as f:
++            pickle.dump(result, f)
++        return True
++    except Exception as e:
++        # Log the exception and re-raise it
++        logger.error(f"Error in worker process: {e}")
++        raise
+ 
+ def _run_in_subprocess(fn: Callable[[], _T]) -> _T:
+-    # NOTE: We use a temporary directory instead of a temporary file to avoid
+-    # issues like https://stackoverflow.com/questions/23212435/permission-denied-to-write-to-my-temporary-file
++    # Set the start method to forkserver
++    ctx = multiprocessing.get_context('fork')
++    
+     with tempfile.TemporaryDirectory() as tempdir:
+         output_filepath = os.path.join(tempdir, "registry_output.tmp")
+-
+-        # `cloudpickle` allows pickling lambda functions directly
+-        input_bytes = cloudpickle.dumps((fn, output_filepath))
+-
+-        # cannot use `sys.executable __file__` here because the script
+-        # contains relative imports
+-        returned = subprocess.run(_SUBPROCESS_COMMAND,
+-                                  input=input_bytes,
+-                                  capture_output=True)
+-
+-        # check if the subprocess is successful
+-        try:
+-            returned.check_returncode()
+-        except Exception as e:
+-            # wrap raised exception to provide more information
+-            raise RuntimeError(f"Error raised in subprocess:\n"
+-                               f"{returned.stderr.decode()}") from e
+-
+-        with open(output_filepath, "rb") as f:
+-            return pickle.load(f)
++        
++        # Serialize the function and output path using cloudpickle
++        serialized_data = cloudpickle.dumps((fn, output_filepath))
++        
++        logger.info("Launched the forkserver process")
++        
++        # Use a pool with a single worker for better error handling
++        with ctx.Pool(1) as pool:
++            try:
++                # Submit the task and get the result
++                result = pool.apply(_worker_function, (serialized_data,))
++                logger.info("Forkserver process finished")
++                
++                # Load and return the result
++                with open(output_filepath, "rb") as f:
++                    return pickle.load(f)
++                    
++            except Exception as e:
++                raise RuntimeError(f"Error raised in forkserver process: {e}") from e
++
++
++# def _run_in_subprocess(fn: Callable[[], _T]) -> _T:
++#     # NOTE: We use a temporary directory instead of a temporary file to avoid
++#     # issues like https://stackoverflow.com/questions/23212435/permission-denied-to-write-to-my-temporary-file
++#     with tempfile.TemporaryDirectory() as tempdir:
++#         output_filepath = os.path.join(tempdir, "registry_output.tmp")
++
++#         # `cloudpickle` allows pickling lambda functions directly
++#         input_bytes = cloudpickle.dumps((fn, output_filepath))
++
++#         # cannot use `sys.executable __file__` here because the script
++#         # contains relative imports
++#         returned = subprocess.run(_SUBPROCESS_COMMAND,
++#                                   input=input_bytes,
++#                                   capture_output=True)
++
++#         # check if the subprocess is successful
++#         try:
++#             returned.check_returncode()
++#         except Exception as e:
++#             # wrap raised exception to provide more information
++#             raise RuntimeError(f"Error raised in subprocess:\n"
++#                                f"{returned.stderr.decode()}") from e
++
++#         with open(output_filepath, "rb") as f:
++#             return pickle.load(f)
+ 
+ 
+ def _run() -> None:
+-- 
+2.25.1
+

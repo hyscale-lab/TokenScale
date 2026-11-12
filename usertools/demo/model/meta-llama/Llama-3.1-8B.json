@@ -1,0 +1,27 @@
+{
+  "model_name": "meta-llama/Llama-3.1-8B",
+  "cli": "vllm",
+  "env": [],
+  "args": [
+    "serve",
+    "/scratch/users/ntu/$USER/hub/models--meta-llama--Llama-3.1-8B/snapshots/d04e592bb4f6aa9cfee91e2e20afa771667e1d4b/",
+    "--gpu-memory-utilization",
+    "0.9",
+    "--load-format",
+    "auto",
+    "--served-model-name",
+    "meta-llama/Llama-3.1-8B",
+    "--dtype",
+    "bfloat16"
+  ],
+  "tp_arg": "--tensor-parallel-size",
+  "host_arg": "--host",
+  "port_arg": "--port",
+  "config": {
+    "tp_level": 1,
+    "max_request_per_instance": 60,
+    "min_instance": 1,
+    "min_life_time": 0,
+    "scale_down_to_zero_grace_period": 30
+  }
+}

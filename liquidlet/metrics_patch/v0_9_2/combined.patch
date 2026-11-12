@@ -1,0 +1,1006 @@
+From 51f7ad1bc217ddc2a5aa6f1f1858f1c9e76a93a5 Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Sat, 31 May 2025 12:41:56 +0000
+Subject: [PATCH 1/4] openai_entrypoint
+
+---
+ vllm/entrypoints/openai/protocol.py           | 4 +++-
+ vllm/entrypoints/openai/serving_completion.py | 7 +++++--
+ 2 files changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/vllm/entrypoints/openai/protocol.py b/vllm/entrypoints/openai/protocol.py
+index 3b5281962..ae9609c6d 100644
+--- a/vllm/entrypoints/openai/protocol.py
++++ b/vllm/entrypoints/openai/protocol.py
+@@ -6,7 +6,7 @@
+ import json
+ import time
+ from http import HTTPStatus
+-from typing import Annotated, Any, ClassVar, Literal, Optional, Union
++from typing import Annotated, Any, ClassVar, Literal, Optional, Union, List
+ 
+ import regex as re
+ import torch
+@@ -24,6 +24,7 @@ from vllm.sampling_params import (BeamSearchParams, GuidedDecodingParams,
+                                   RequestOutputKind, SamplingParams)
+ from vllm.sequence import Logprob
+ from vllm.utils import random_uuid, resolve_obj_by_qualname
++from vllm.sequence import RequestMetrics
+ 
+ logger = init_logger(__name__)
+ 
+@@ -1278,6 +1279,7 @@ class CompletionResponse(OpenAIBaseModel):
+     model: str
+     choices: list[CompletionResponseChoice]
+     usage: UsageInfo
++    metrics_list: List[RequestMetrics]
+     kv_transfer_params: Optional[dict[str, Any]] = Field(
+         default=None, description="KVTransfer parameters.")
+ 
+diff --git a/vllm/entrypoints/openai/serving_completion.py b/vllm/entrypoints/openai/serving_completion.py
+index a19fde8d7..bbff5c029 100644
+--- a/vllm/entrypoints/openai/serving_completion.py
++++ b/vllm/entrypoints/openai/serving_completion.py
+@@ -5,7 +5,7 @@ import asyncio
+ import time
+ from collections.abc import AsyncGenerator, AsyncIterator
+ from collections.abc import Sequence as GenericSequence
+-from typing import Optional, Union, cast
++from typing import Optional, Union, cast, List
+ 
+ import jinja2
+ from fastapi import Request
+@@ -38,6 +38,7 @@ from vllm.sampling_params import BeamSearchParams, SamplingParams
+ from vllm.sequence import Logprob
+ from vllm.transformers_utils.tokenizer import AnyTokenizer
+ from vllm.utils import merge_async_iterators
++from vllm.sequence import RequestMetrics
+ 
+ logger = init_logger(__name__)
+ 
+@@ -444,8 +445,9 @@ class OpenAIServingCompletion(OpenAIServing):
+         choices: list[CompletionResponseChoice] = []
+         num_prompt_tokens = 0
+         num_generated_tokens = 0
+-
++        metrics_list: List[RequestMetrics]= []
+         for final_res in final_res_batch:
++            metrics_list.append(final_res.metrics)
+             prompt_token_ids = final_res.prompt_token_ids
+             assert prompt_token_ids is not None
+             prompt_logprobs = clamp_prompt_logprobs(final_res.prompt_logprobs)
+@@ -522,6 +524,7 @@ class OpenAIServingCompletion(OpenAIServing):
+             model=model_name,
+             choices=choices,
+             usage=usage,
++            metrics_list=metrics_list,
+             kv_transfer_params=final_res_batch[0].kv_transfer_params)
+ 
+     def _create_completion_logprobs(
+-- 
+2.43.0
+
+From 4b80378cdd0e514b36dfe0a5c64ecc03797e32b4 Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Sat, 21 Jun 2025 11:57:44 +0000
+Subject: [PATCH 2/4] v1 metrics
+
+---
+ vllm/v1/engine/output_processor.py | 27 +++++++++++++++++++++++++++
+ 1 file changed, 27 insertions(+)
+
+diff --git a/vllm/v1/engine/output_processor.py b/vllm/v1/engine/output_processor.py
+index 2bcd61d1f..d161cdad7 100644
+--- a/vllm/v1/engine/output_processor.py
++++ b/vllm/v1/engine/output_processor.py
+@@ -19,6 +19,8 @@ from vllm.v1.engine.logprobs import LogprobsProcessor
+ from vllm.v1.engine.parallel_sampling import ParentRequest
+ from vllm.v1.metrics.stats import (IterationStats, LoRARequestStates,
+                                    RequestStateStats)
++from vllm.sequence import RequestMetrics
++import time
+ 
+ 
+ class RequestOutputCollector:
+@@ -221,6 +223,10 @@ class RequestState:
+         else:
+             prompt_logprobs = self.logprobs_processor.prompt_logprobs
+ 
++        metrics = None
++        if finished:
++            metrics: RequestMetrics = self._convert_stats_to_metrics()
++
+         return RequestOutput(
+             request_id=request_id,
+             prompt=self.prompt,
+@@ -230,7 +236,28 @@ class RequestState:
+             finished=finished,
+             kv_transfer_params=kv_transfer_params,
+             num_cached_tokens=num_cached_tokens,
++            metrics=metrics
++        )
++
++    def _convert_stats_to_metrics(self) -> RequestMetrics:
++        
++        queued_time = self.stats.scheduled_ts - self.stats.queued_ts
++
++        # Prefill interval is from first SCHEDULED to first NEW_TOKEN
++        # Any preemptions during prefill is included in the interval
++        prefill_time = self.stats.first_token_ts - self.stats.scheduled_ts
++
++        # Decode interval is from first NEW_TOKEN to last NEW_TOKEN
++        # Any preemptions during decode are included
++        metrics = RequestMetrics(
++            arrival_time=self.stats.arrival_time,
++            last_token_time=0,
++            first_scheduled_time=self.stats.arrival_time + queued_time,
++            time_in_queue=queued_time,
++            first_token_time=self.stats.arrival_time+queued_time+prefill_time,
++            finished_time=time.time()
+         )
++        return metrics
+ 
+     def _new_completion_output(
+         self,
+-- 
+2.43.0
+
+From 592a328bce63a00f6e3de6402760462c004e6600 Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Wed, 9 Jul 2025 13:38:30 +0000
+Subject: [PATCH 3/4] coldstart
+
+---
+ vllm/engine/arg_utils.py                   | 109 ++++++++++++++++++++-
+ vllm/entrypoints/utils.py                  |   2 +-
+ vllm/global_var.py                         |   1 +
+ vllm/model_executor/models/registry.py     |  85 +++++++++++-----
+ vllm/transformers_utils/tokenizer.py       |   3 +-
+ vllm/transformers_utils/tokenizer_group.py |  11 ++-
+ vllm/utils/__init__.py                              |  19 +++-
+ vllm/v1/engine/core.py                     |  44 ++++++++-
+ vllm/v1/worker/gpu_model_runner.py         |  63 ++++++------
+ 9 files changed, 264 insertions(+), 73 deletions(-)
+ create mode 100644 vllm/global_var.py
+
+diff --git a/vllm/engine/arg_utils.py b/vllm/engine/arg_utils.py
+index 6c908f88b..2cba14746 100644
+--- a/vllm/engine/arg_utils.py
++++ b/vllm/engine/arg_utils.py
+@@ -43,7 +43,7 @@ from vllm.transformers_utils.utils import check_gguf_file
+ from vllm.usage.usage_lib import UsageContext
+ from vllm.utils import (STR_DUAL_CHUNK_FLASH_ATTN_VAL, FlexibleArgumentParser,
+                         GiB_bytes, get_ip, is_in_ray_actor)
+-
++import os
+ # yapf: enable
+ 
+ logger = init_logger(__name__)
+@@ -53,6 +53,111 @@ T = TypeVar("T")
+ TypeHint = Union[type[Any], object]
+ TypeHintT = Union[type[T], object]
+ 
++class KwargsCache:
++    def __init__(self):
++        cache_path = os.getenv("VLLM_DISK_CACHE_PATH")
++        if cache_path:
++            # Persistent, cross-process cache
++            self.cache = dc.Cache(cache_path)
++            self.use_diskcache = True
++        else:
++            # In-memory, per-process LRU cache
++            self._compute_kwargs = functools.lru_cache(maxsize=30)(self._compute_kwargs_impl)
++            self.use_diskcache = False
++
++    def _compute_kwargs_impl(self, cls) -> dict[str, Any]:
++        cls_docs = get_attr_docs(cls)
++        kwargs = {}
++        for field in fields(cls):
++            type_hints: set[TypeHint] = get_type_hints(field.type)
++            generator = (th for th in type_hints if is_dataclass(th))
++            dataclass_cls = next(generator, None)
++
++            if field.default is not MISSING:
++                default = field.default
++            elif field.default_factory is not MISSING:
++                default = field.default_factory()
++
++            name = field.name
++            help = cls_docs[name].strip().replace("%", "%%")
++            kwargs[name] = {"default": default, "help": help}
++
++            json_tip = """\n\nShould either be a valid JSON string or JSON keys
++            passed individually..."""  # truncated for brevity
++
++            if dataclass_cls is not None:
++                def parse_dataclass(val: str, cls=dataclass_cls) -> Any:
++                    try:
++                        if hasattr(cls, "from_cli"):
++                            return cls.from_cli(val)
++                        return TypeAdapter(cls).validate_json(val)
++                    except ValidationError as e:
++                        raise argparse.ArgumentTypeError(repr(e)) from e
++                kwargs[name]["type"] = parse_dataclass
++                kwargs[name]["help"] += json_tip
++            elif contains_type(type_hints, bool):
++                kwargs[name]["action"] = argparse.BooleanOptionalAction
++            elif contains_type(type_hints, Literal):
++                kwargs[name].update(literal_to_kwargs(type_hints))
++            elif contains_type(type_hints, tuple):
++                type_hint = get_type(type_hints, tuple)
++                types = get_args(type_hint)
++                tuple_type = types[0]
++                assert all(t is tuple_type for t in types if t is not Ellipsis)
++                kwargs[name]["type"] = tuple_type
++                kwargs[name]["nargs"] = "+" if Ellipsis in types else len(types)
++            elif contains_type(type_hints, list):
++                type_hint = get_type(type_hints, list)
++                types = get_args(type_hint)
++                assert len(types) == 1
++                kwargs[name]["type"] = types[0]
++                kwargs[name]["nargs"] = "+"
++            elif contains_type(type_hints, int):
++                kwargs[name]["type"] = int
++                if name in {"max_model_len", "max_num_batched_tokens"}:
++                    kwargs[name]["type"] = human_readable_int
++            elif contains_type(type_hints, float):
++                kwargs[name]["type"] = float
++            elif (contains_type(type_hints, dict)
++                  and (contains_type(type_hints, str)
++                       or any(is_not_builtin(th) for th in type_hints))):
++                kwargs[name]["type"] = union_dict_and_str
++            elif contains_type(type_hints, dict):
++                kwargs[name]["type"] = parse_type(json.loads)
++                kwargs[name]["help"] += json_tip
++            elif (contains_type(type_hints, str)
++                  or any(is_not_builtin(th) for th in type_hints)):
++                kwargs[name]["type"] = str
++            else:
++                raise ValueError(f"Unsupported type {type_hints} for argument {name}.")
++
++            if get_origin(kwargs[name].get("type")) is Literal:
++                kwargs[name].update(literal_to_kwargs({kwargs[name]["type"]}))
++
++            if type(None) in type_hints and not contains_type(type_hints, bool):
++                kwargs[name]["type"] = optional_type(kwargs[name]["type"])
++                if kwargs[name].get("choices"):
++                    kwargs[name]["choices"].append("None")
++
++        return kwargs
++
++    def _compute_kwargs(self, cls):
++        """Will be replaced by lru_cache in __init__ if using memory cache."""
++        return self._compute_kwargs_impl(cls)
++
++    def get_kwargs(self, cls) -> dict[str, Any]:
++        if self.use_diskcache:
++            key = f"compute_kwargs:{cls.__module__}.{cls.__qualname__}"
++            if key in self.cache:
++                kwargs = self.cache[key]
++            else:
++                kwargs = self._compute_kwargs_impl(cls)
++                self.cache[key] = kwargs
++            return copy.deepcopy(kwargs)
++        else:
++            return copy.deepcopy(self._compute_kwargs(cls))
++
++KWARGS_CACHE = KwargsCache()
+ 
+ def parse_type(return_type: Callable[[str], T]) -> Callable[[str], T]:
+ 
+@@ -279,7 +384,7 @@ def get_kwargs(cls: ConfigType) -> dict[str, Any]:
+     is returned so callers can mutate the dictionary without affecting the
+     cached version.
+     """
+-    return copy.deepcopy(_compute_kwargs(cls))
++    return copy.deepcopy(KWARGS_CACHE._compute_kwargs(cls))
+ 
+ 
+ @dataclass
+diff --git a/vllm/entrypoints/utils.py b/vllm/entrypoints/utils.py
+index 16ba2b453..b3124a075 100644
+--- a/vllm/entrypoints/utils.py
++++ b/vllm/entrypoints/utils.py
+@@ -148,7 +148,7 @@ def cli_env_setup():
+     # - https://docs.habana.ai/en/latest/PyTorch/Getting_Started_with_PyTorch_and_Gaudi/Getting_Started_with_PyTorch.html?highlight=multiprocessing#torch-multiprocessing-for-dataloaders
+     if "VLLM_WORKER_MULTIPROC_METHOD" not in os.environ:
+         logger.debug("Setting VLLM_WORKER_MULTIPROC_METHOD to 'spawn'")
+-        os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
++        os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "fork"
+ 
+ 
+ def _validate_truncation_size(
+diff --git a/vllm/global_var.py b/vllm/global_var.py
+new file mode 100644
+index 000000000..6d634e0a4
+--- /dev/null
++++ b/vllm/global_var.py
+@@ -0,0 +1 @@
++TOKENIZER_MAP = {}
+\ No newline at end of file
+diff --git a/vllm/model_executor/models/registry.py b/vllm/model_executor/models/registry.py
+index ff605cae0..2c53fe207 100644
+--- a/vllm/model_executor/models/registry.py
++++ b/vllm/model_executor/models/registry.py
+@@ -15,6 +15,7 @@ from collections.abc import Set
+ from dataclasses import dataclass, field
+ from functools import lru_cache
+ from typing import Callable, Optional, TypeVar, Union
++import multiprocessing
+ 
+ import cloudpickle
+ import torch.nn as nn
+@@ -582,33 +583,71 @@ ModelRegistry = _ModelRegistry({
+ })
+ 
+ _T = TypeVar("_T")
+-
++def _worker_function(serialized_data):
++    """Worker function that runs in the forked process"""
++    fn, output_filepath = cloudpickle.loads(serialized_data)
++    try:
++        result = fn()
++        with open(output_filepath, "wb") as f:
++            pickle.dump(result, f)
++        return True
++    except Exception as e:
++        # Log the exception and re-raise it
++        logger.error(f"Error in worker process: {e}")
++        raise
+ 
+ def _run_in_subprocess(fn: Callable[[], _T]) -> _T:
+-    # NOTE: We use a temporary directory instead of a temporary file to avoid
+-    # issues like https://stackoverflow.com/questions/23212435/permission-denied-to-write-to-my-temporary-file
++    # Set the start method to forkserver
++    ctx = multiprocessing.get_context('fork')
++    
+     with tempfile.TemporaryDirectory() as tempdir:
+         output_filepath = os.path.join(tempdir, "registry_output.tmp")
+-
+-        # `cloudpickle` allows pickling lambda functions directly
+-        input_bytes = cloudpickle.dumps((fn, output_filepath))
+-
+-        # cannot use `sys.executable __file__` here because the script
+-        # contains relative imports
+-        returned = subprocess.run(_SUBPROCESS_COMMAND,
+-                                  input=input_bytes,
+-                                  capture_output=True)
+-
+-        # check if the subprocess is successful
+-        try:
+-            returned.check_returncode()
+-        except Exception as e:
+-            # wrap raised exception to provide more information
+-            raise RuntimeError(f"Error raised in subprocess:\n"
+-                               f"{returned.stderr.decode()}") from e
+-
+-        with open(output_filepath, "rb") as f:
+-            return pickle.load(f)
++        
++        # Serialize the function and output path using cloudpickle
++        serialized_data = cloudpickle.dumps((fn, output_filepath))
++        
++        logger.info("Launched the forkserver process")
++        
++        # Use a pool with a single worker for better error handling
++        with ctx.Pool(1) as pool:
++            try:
++                # Submit the task and get the result
++                result = pool.apply(_worker_function, (serialized_data,))
++                logger.info("Forkserver process finished")
++                
++                # Load and return the result
++                with open(output_filepath, "rb") as f:
++                    return pickle.load(f)
++                    
++            except Exception as e:
++                raise RuntimeError(f"Error raised in forkserver process: {e}") from e
++
++
++# def _run_in_subprocess(fn: Callable[[], _T]) -> _T:
++#     # NOTE: We use a temporary directory instead of a temporary file to avoid
++#     # issues like https://stackoverflow.com/questions/23212435/permission-denied-to-write-to-my-temporary-file
++#     with tempfile.TemporaryDirectory() as tempdir:
++#         output_filepath = os.path.join(tempdir, "registry_output.tmp")
++
++#         # `cloudpickle` allows pickling lambda functions directly
++#         input_bytes = cloudpickle.dumps((fn, output_filepath))
++
++#         # cannot use `sys.executable __file__` here because the script
++#         # contains relative imports
++#         returned = subprocess.run(_SUBPROCESS_COMMAND,
++#                                   input=input_bytes,
++#                                   capture_output=True)
++
++#         # check if the subprocess is successful
++#         try:
++#             returned.check_returncode()
++#         except Exception as e:
++#             # wrap raised exception to provide more information
++#             raise RuntimeError(f"Error raised in subprocess:\n"
++#                                f"{returned.stderr.decode()}") from e
++
++#         with open(output_filepath, "rb") as f:
++#             return pickle.load(f)
+ 
+ 
+ def _run() -> None:
+diff --git a/vllm/transformers_utils/tokenizer.py b/vllm/transformers_utils/tokenizer.py
+index ae96ebe4e..dde321b8c 100644
+--- a/vllm/transformers_utils/tokenizer.py
++++ b/vllm/transformers_utils/tokenizer.py
+@@ -25,13 +25,13 @@ from vllm.utils import make_async
+ 
+ if TYPE_CHECKING:
+     from vllm.config import ModelConfig
++import diskcache as dc
+ 
+ logger = init_logger(__name__)
+ 
+ AnyTokenizer = Union[PreTrainedTokenizer, PreTrainedTokenizerFast,
+                      TokenizerBase]
+ 
+-
+ def decode_tokens(
+     tokenizer: AnyTokenizer,
+     token_ids: list[int],
+@@ -269,7 +269,6 @@ def get_tokenizer(
+ 
+ cached_get_tokenizer = lru_cache(get_tokenizer)
+ 
+-
+ def cached_tokenizer_from_config(
+     model_config: "ModelConfig",
+     **kwargs: Any,
+diff --git a/vllm/transformers_utils/tokenizer_group.py b/vllm/transformers_utils/tokenizer_group.py
+index eb53cceaa..e3cd1fd94 100644
+--- a/vllm/transformers_utils/tokenizer_group.py
++++ b/vllm/transformers_utils/tokenizer_group.py
+@@ -8,9 +8,10 @@ from vllm.lora.request import LoRARequest
+ from vllm.transformers_utils.tokenizer import (AnyTokenizer, encode_tokens,
+                                                get_lora_tokenizer,
+                                                get_lora_tokenizer_async,
+-                                               get_tokenizer)
++                                               get_tokenizer,
++                                               )
+ from vllm.utils import LRUCache
+-
++import vllm.global_var as gv 
+ 
+ class TokenizerGroup:
+     """A group of tokenizers that can be used for LoRA adapters."""
+@@ -21,7 +22,11 @@ class TokenizerGroup:
+         self.tokenizer_config = tokenizer_config
+         self.enable_lora = enable_lora
+         self.max_input_length = max_input_length
+-        self.tokenizer = get_tokenizer(self.tokenizer_id, **tokenizer_config)
++        # first try to get the tokenizer from global_var
++        if self.tokenizer_id in gv.TOKENIZER_MAP:
++            self.tokenizer = gv.TOKENIZER_MAP[self.tokenizer_id]
++        else:
++            self.tokenizer = get_tokenizer(self.tokenizer_id, **tokenizer_config)
+         max_loras = tokenizer_config.get("max_loras", 0)
+         self.lora_tokenizers = LRUCache[int, AnyTokenizer](
+             capacity=max(max_loras, max_num_seqs) if enable_lora else 0)
+diff --git a/vllm/utils/__init__.py b/vllm/utils/__init__.py
+index fdefda901..67beb2480 100644
+--- a/vllm/utils/__init__.py
++++ b/vllm/utils/__init__.py
+@@ -910,17 +910,26 @@ class DeviceMemoryProfiler:
+         return current_platform.get_current_memory_usage(self.device)
+ 
+     def __enter__(self):
+-        self.initial_memory = self.current_memory_usage()
++        
++        env_mem_str = os.environ.get("VLLM_KVC_MEM_GB")
++
++        if env_mem_str is None:
++            self.initial_memory = self.current_memory_usage()
+         # This allows us to call methods of the context manager if needed
+         return self
+ 
+     def __exit__(self, exc_type, exc_val, exc_tb):
+-        self.final_memory = self.current_memory_usage()
+-        self.consumed_memory = self.final_memory - self.initial_memory
++        env_mem_str = os.environ.get("VLLM_KVC_MEM_GB")
+ 
+-        # Force garbage collection
+-        gc.collect()
++        if env_mem_str is None:
++            
++            self.final_memory = self.current_memory_usage()
++            self.consumed_memory = self.final_memory - self.initial_memory
+ 
++            # Force garbage collection
++            gc.collect()
++        else:
++            self.consumed_memory = 0
+ 
+ def make_ndarray_with_pad(
+     x: list[list[T]],
+diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
+index 453ed364d..5bc26463a 100644
+--- a/vllm/v1/engine/core.py
++++ b/vllm/v1/engine/core.py
+@@ -136,11 +136,49 @@ class EngineCore:
+ 
+         # Get all kv cache needed by the model
+         kv_cache_specs = self.model_executor.get_kv_cache_specs()
++        num_devices = len(kv_cache_specs)
+ 
+         # Profiles the peak memory usage of the model to determine how much
+         # memory can be allocated for kv cache.
+-        available_gpu_memory = self.model_executor.determine_available_memory()
++        # available_gpu_memory = self.model_executor.determine_available_memory()
++        env_mem_str = os.environ.get("VLLM_KVC_MEM_GB")
++        GiB = 1024 ** 3
++
++        if env_mem_str is not None:
++            # available_gpu_memory = [int(float(env_mem_str) * (1024 ** 3))]  # Convert GB to Bytes
++            # logger.info(f"available_gpu_memory (from env): {available_gpu_memory} Bytes")
++            parts = [p.strip() for p in env_mem_str.split(",") if p.strip()]
++            try:
++                vals_gib = [float(p) for p in parts]
++            except ValueError:
++                logger.error(f"VLLM_KVC_MEM_GB malformed: {env_mem_str!r}. Expected floats or comma-separated floats (GiB).")
++                raise
++
++            if len(vals_gib) == 1 and num_devices > 1:
++                vals_gib = vals_gib * num_devices
++            elif len(vals_gib) != num_devices:
++                logger.error(
++                    "VLLM_KVC_MEM_GB count mismatch: got %d value(s) for %d device(s). "
++                    "Provide one value (replicated) or one per visible device. env=%r",
++                    len(vals_gib), num_devices, env_mem_str,
++                )
++                raise AssertionError("VLLM_KVC_MEM_GB count mismatch")
++
++            available_gpu_memory = []
++            for i, gib in enumerate(vals_gib):
++                if gib < 1.0:
++                    logger.error("VLLM_KVC_MEM_GB[%d]=%.3f GiB is too small; must be >= 1 GiB.", i, gib)
++                    raise AssertionError("VLLM_KVC_MEM_GB too small")
++                available_gpu_memory.append(int(gib * GiB))
++
++            logger.info("available_gpu_memory (from env, per device): %s Bytes", available_gpu_memory)
++            
++        else:
++            profile_start = time.time()
++            available_gpu_memory = self.model_executor.determine_available_memory()
++            logger.info(f"available_gpu_memory (profiled): {available_gpu_memory} Bytes, profiling memory takes: {(time.time() - profile_start):.1f}s")
+ 
++        logger.info(f"kv_cache_specs is {kv_cache_specs}, available_gpu_memory is {available_gpu_memory}")
+         assert len(kv_cache_specs) == len(available_gpu_memory)
+         # Get the kv cache tensor size
+         kv_cache_configs = [
+@@ -149,10 +187,6 @@ class EngineCore:
+             for kv_cache_spec_one_worker, available_gpu_memory_one_worker in
+             zip(kv_cache_specs, available_gpu_memory)
+         ]
+-
+-        # Since we use a shared centralized controller, we need the
+-        # `kv_cache_config` to be consistent across all workers to make sure
+-        # all the memory operators can be applied to all workers.
+         unify_kv_cache_configs(kv_cache_configs)
+ 
+         # All workers have the same kv_cache_config except layer names, so use
+diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
+index 3c9de5720..4a247befa 100644
+--- a/vllm/v1/worker/gpu_model_runner.py
++++ b/vllm/v1/worker/gpu_model_runner.py
+@@ -1723,38 +1723,37 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+ 
+     def load_model(self) -> None:
+         logger.info("Starting to load model %s...", self.model_config.model)
+-        with DeviceMemoryProfiler() as m:  # noqa: SIM117
+-            time_before_load = time.perf_counter()
+-            model_loader = get_model_loader(self.load_config)
+-            if not hasattr(self, "model"):
+-                logger.info("Loading model from scratch...")
+-                self.model = model_loader.load_model(
+-                    vllm_config=self.vllm_config,
+-                    model_config=self.model_config)
+-            else:
+-                logger.info(
+-                    "Model was already initialized. Loading weights inplace..."
+-                )
+-                model_loader.load_weights(self.model,
+-                                          model_config=self.model_config)
+-            if has_step_pooler(self.model):
+-                self.input_batch.logits_processing_needs_token_ids = True
+-            if self.lora_config:
+-                self.model = self.load_lora_model(self.model,
+-                                                  self.model_config,
+-                                                  self.scheduler_config,
+-                                                  self.lora_config,
+-                                                  self.device)
+-            if hasattr(self, "drafter"):
+-                logger.info("Loading drafter model...")
+-                self.drafter.load_model(self.model)
+-            if self.use_aux_hidden_state_outputs:
+-                self.model.set_aux_hidden_state_layers(
+-                    self.model.get_eagle3_aux_hidden_state_layers())
+-            time_after_load = time.perf_counter()
+-        self.model_memory_usage = m.consumed_memory
+-        logger.info("Model loading took %.4f GiB and %.6f seconds",
+-                    self.model_memory_usage / GiB_bytes,
++        # with DeviceMemoryProfiler() as m:  # noqa: SIM117
++        time_before_load = time.perf_counter()
++        model_loader = get_model_loader(self.load_config)
++        if not hasattr(self, "model"):
++            logger.info("Loading model from scratch...")
++            self.model = model_loader.load_model(
++                vllm_config=self.vllm_config,
++                model_config=self.model_config)
++        else:
++            logger.info(
++                "Model was already initialized. Loading weights inplace..."
++            )
++            model_loader.load_weights(self.model,
++                                        model_config=self.model_config)
++        if has_step_pooler(self.model):
++            self.input_batch.logits_processing_needs_token_ids = True
++        if self.lora_config:
++            self.model = self.load_lora_model(self.model,
++                                                self.model_config,
++                                                self.scheduler_config,
++                                                self.lora_config,
++                                                self.device)
++        if hasattr(self, "drafter"):
++            logger.info("Loading drafter model...")
++            self.drafter.load_model(self.model)
++        if self.use_aux_hidden_state_outputs:
++            self.model.set_aux_hidden_state_layers(
++                self.model.get_eagle3_aux_hidden_state_layers())
++        time_after_load = time.perf_counter()
++        # self.model_memory_usage = m.consumed_memory
++        logger.info("Model loading took %.6f seconds",
+                     time_after_load - time_before_load)
+         prepare_communication_buffer_for_model(self.model)
+ 
+-- 
+2.43.0
+
+From 5a644b7a810fec9d983721112708d0adbeb10d9a Mon Sep 17 00:00:00 2001
+From: TokenScale Authors <tokenscale@example.com>
+Date: Sun, 5 Oct 2025 15:16:03 +0000
+Subject: [PATCH 4/4] coldstart profiles
+
+---
+ vllm/coldstart_profiler.py             | 148 +++++++++++++++++++++++++
+ vllm/coldstart_utils.py                |  46 ++++++++
+ vllm/entrypoints/openai/api_server.py  |  17 +++
+ vllm/v1/executor/multiproc_executor.py |  12 ++
+ 4 files changed, 223 insertions(+)
+ create mode 100644 vllm/coldstart_profiler.py
+ create mode 100644 vllm/coldstart_utils.py
+
+diff --git a/vllm/coldstart_profiler.py b/vllm/coldstart_profiler.py
+new file mode 100644
+index 000000000..1154f259e
+--- /dev/null
++++ b/vllm/coldstart_profiler.py
+@@ -0,0 +1,148 @@
++import time
++import subprocess
++import json
++from collections import OrderedDict
++from typing import Dict
++import os
++
++ENVSTR = "COLDSTART_REPORT_FILEPATH"
++# when disabled, simply do nothing
++class DummyProfiler:
++    def __init__(self, name="root", parent=None, parent_event_name=None, manager=None):
++        self.name = "dummy"
++        pass
++    # ----------- Core Recording Methods -----------
++    def mark(self, name: str):
++        pass
++
++    def fork(self, child_name: str, child_profiler):
++        pass
++
++    def end_fork(self, child):
++        pass
++
++    def report(self) -> str:
++        """Return the formatted report for this profiler and all children."""
++        return f"{ENVSTR} is not set!"
++
++    # ----------- JSON Dump -----------
++
++    def dump_json(self):
++        """Dump full profiler data (hierarchy + events + GPU) to JSON."""
++        pass
++        
++
++class ColdstartProfiler:
++    def __init__(self, name="root", parent=None, parent_event_name=None, manager=None):
++        self.name = name
++        self.parent = parent
++        self.parent_event_name = parent_event_name
++
++        if manager is None:
++            raise ValueError("ColdstartProfiler requires a manager instance")
++
++        self.events = manager.dict()
++        self.children = manager.list()
++
++    # ----------- GPU Memory Snapshot -----------
++    def _get_gpu_memory(self):
++        try:
++            output = subprocess.check_output(
++                [
++                    "nvidia-smi",
++                    "--query-gpu=index,memory.used,memory.total",
++                    "--format=csv,noheader,nounits",
++                ],
++                text=True,
++            )
++            gpu_usage = {}
++            for line in output.strip().split("\n"):
++                idx, used, total = [x.strip() for x in line.split(",")]
++                gpu_usage[int(idx)] = {
++                    "used_MB": float(used),
++                    "total_MB": float(total),
++                }
++            return gpu_usage
++        except Exception as e:
++            return {"error": str(e)}
++
++    # ----------- Core Recording Methods -----------
++    def mark(self, name: str):
++        """Record a named event with timestamp and GPU usage."""
++        t = time.time()
++        gpu_usage = self._get_gpu_memory()
++        self.events[name] = {"time": t, "gpu_usage": gpu_usage}
++
++    def fork(self, child_name: str, child_profiler):
++        """Fork a new child time axis. The child starts from the current time."""
++        self.children.append(child_profiler)
++        # mark fork start in parent
++        self.mark(f"fork_{child_name}_begin")
++        # initialize child's first event
++        child_profiler.mark("start")
++
++    def end_fork(self, child):
++        """Mark the end of a child axis in the parent timeline."""
++        self.mark(f"fork_{child.name}_end")
++
++    # ----------- Reporting -----------
++    def _generate_report(self, indent=0) -> str:
++        prefix = "  " * indent
++        lines = []
++
++        names = list(self.events.keys())
++        times = [self.events[n]["time"] for n in names] if self.events else []
++
++        if len(times) >= 2:
++            total_time = times[-1] - times[0]
++            lines.append(f"{prefix}----{{{self.name}: e2e_latency:{total_time:.3f} second}}----")
++
++            for i in range(1, len(names)):
++                delta = times[i] - times[i - 1]
++                perc = (delta / total_time) * 100
++
++                # Retrieve GPU usage for the "after" event
++                gpu_info = self.events[names[i]].get("gpu_usage", {})
++                if isinstance(gpu_info, dict) and "error" not in gpu_info:
++                    gpu_summary = ", ".join(
++                        [f"GPU{gid}: {v['used_MB']/1024:.2f}GB/{v['total_MB']/1024:.2f}GB"
++                         for gid, v in gpu_info.items()]
++                    )
++                    gpu_summary = f"[{gpu_summary}]"
++                else:
++                    gpu_summary = "unavailable"
++
++                lines.append(
++                    f"({perc:5.1f}%) {prefix}{names[i-1]} → {names[i]}: "
++                    f"{delta:.3f} sec | GPU usage: {gpu_summary}"
++                )
++        else:
++            lines.append(f"{prefix}----{{{self.name}: insufficient events}}----")
++
++        # Recursively include child summaries
++        for child in self.children:
++            lines.append("")  # spacing
++            lines.append(child._generate_report(indent=indent + 1))
++
++        return "\n".join(lines)
++
++    def report(self) -> str:
++        """Return the formatted report for this profiler and all children."""
++        return self._generate_report()
++
++    # ----------- JSON Dump -----------
++    def _serialize(self):
++        events_dict = {k: v for k, v in self.events.items()}
++        data = {
++            "name": self.name,
++            "events": events_dict,
++            "children": [child._serialize() for child in self.children]
++        }
++        return data
++
++    def dump_json(self):
++        filepath = os.getenv(ENVSTR)
++        """Dump full profiler data (hierarchy + events + GPU) to JSON."""
++        with open(filepath, "w") as f:
++            json.dump(self._serialize(), f, indent=2)
++        print(f"[INFO] Profiling data dumped to {filepath}")
+diff --git a/vllm/coldstart_utils.py b/vllm/coldstart_utils.py
+new file mode 100644
+index 000000000..6bc8dd44c
+--- /dev/null
++++ b/vllm/coldstart_utils.py
+@@ -0,0 +1,46 @@
++from vllm.coldstart_profiler import ColdstartProfiler, DummyProfiler, ENVSTR
++from multiprocessing import Manager
++import os
++from typing import List
++from vllm.logger import init_logger
++logger = init_logger(__name__)
++
++
++MANAGER = None
++PROFILER_MAP = None
++
++def _init_mp_state():
++    global MANAGER, PROFILER_MAP
++    MANAGER = Manager()
++    PROFILER_MAP = MANAGER.dict()
++
++def _create_profiler(name: str = "root") -> ColdstartProfiler:
++    val = os.getenv(ENVSTR)
++    if val is not None:
++        profiler = ColdstartProfiler(name=name, manager=MANAGER)
++    else:
++        profiler = DummyProfiler(name=name, manager=MANAGER)
++    PROFILER_MAP[name] = profiler
++    return profiler
++
++def create_profiler(name: str = "root") -> ColdstartProfiler:
++    _init_mp_state()
++    return _create_profiler(name)
++
++def fork_profiler(name: str, parent_name: str="root") -> ColdstartProfiler:
++    parent_profiler = PROFILER_MAP[parent_name]
++    child_profiler = _create_profiler(name)
++    parent_profiler.fork(name, child_profiler)
++    return child_profiler
++
++def get_profiler(name: str = "root") -> ColdstartProfiler:
++    try:
++        profiler = PROFILER_MAP[name]
++    except Exception as e:
++       logger.error(f"failed to get profiler {name}: current profilers: {PROFILER_MAP.keys()}") 
++       raise e
++    return profiler
++
++def get_profiler_names() -> List[str]:
++    profiler_names = [k for k in PROFILER_MAP.keys()]
++    return profiler_names
+\ No newline at end of file
+diff --git a/vllm/entrypoints/openai/api_server.py b/vllm/entrypoints/openai/api_server.py
+index f3fd15486..379c35b31 100644
+--- a/vllm/entrypoints/openai/api_server.py
++++ b/vllm/entrypoints/openai/api_server.py
+@@ -105,6 +105,7 @@ from vllm.utils import (Device, FlexibleArgumentParser, get_open_zmq_ipc_path,
+                         is_valid_ipv6_address, set_ulimit)
+ from vllm.v1.metrics.prometheus import get_prometheus_registry
+ from vllm.version import __version__ as VLLM_VERSION
++from vllm.coldstart_utils import create_profiler, fork_profiler, get_profiler
+ 
+ prometheus_multiproc_dir: tempfile.TemporaryDirectory
+ 
+@@ -153,7 +154,10 @@ async def build_async_engine_client(
+ 
+     # Context manager to handle engine_client lifecycle
+     # Ensures everything is shutdown and cleaned up on error/exit
++    profiler = get_profiler()
+     engine_args = AsyncEngineArgs.from_cli_args(args)
++    profiler.mark(f"finish_build_engine_args")
++    
+ 
+     async with build_async_engine_client_from_engine_args(
+             engine_args, args.disable_frontend_multiprocessing,
+@@ -176,6 +180,7 @@ async def build_async_engine_client_from_engine_args(
+     """
+ 
+     # Create the EngineConfig (determines if we can use V1).
++    profiler = get_profiler()
+     usage_context = UsageContext.OPENAI_API_SERVER
+     vllm_config = engine_args.create_engine_config(usage_context=usage_context)
+ 
+@@ -199,6 +204,7 @@ async def build_async_engine_client_from_engine_args(
+                 client_addresses=client_config,
+                 client_index=client_index)
+ 
++            profiler.mark(f"finish_init_async_llm")
+             # Don't keep the dummy data in memory
+             await async_llm.reset_mm_cache()
+ 
+@@ -1430,6 +1436,10 @@ async def run_server_worker(listen_address,
+                             client_config=None,
+                             **uvicorn_kwargs) -> None:
+     """Run a single API server worker."""
++    root_profiler = create_profiler()
++    root_profiler.mark("start_run_server_worker")
++    logger.info(f"create_profiler finished")
++
+ 
+     if args.tool_parser_plugin and len(args.tool_parser_plugin) > 3:
+         ToolParserManager.import_tool_parser(args.tool_parser_plugin)
+@@ -1441,14 +1451,21 @@ async def run_server_worker(listen_address,
+     if log_config is not None:
+         uvicorn_kwargs['log_config'] = log_config
+ 
++    root_profiler.mark("start_build_async_engine_client")
+     async with build_async_engine_client(args, client_config) as engine_client:
++        root_profiler.mark("finish_build_async_engine_client")
+         app = build_app(args)
++        root_profiler.mark("finish_build_app")
+ 
+         vllm_config = await engine_client.get_vllm_config()
+         await init_app_state(engine_client, vllm_config, app.state, args)
++        root_profiler.mark("finish_init_app_state")
+ 
+         logger.info("Starting vLLM API server %d on %s", server_index,
+                     listen_address)
++        report = root_profiler.report()
++        root_profiler.dump_json() 
++        logger.info(f"coldstart profiler report: \n{report}")
+         shutdown_task = await serve_http(
+             app,
+             sock=sock,
+diff --git a/vllm/v1/executor/multiproc_executor.py b/vllm/v1/executor/multiproc_executor.py
+index b06b7cc80..c1c2e7969 100644
+--- a/vllm/v1/executor/multiproc_executor.py
++++ b/vllm/v1/executor/multiproc_executor.py
+@@ -34,6 +34,7 @@ from vllm.utils import (get_distributed_init_method, get_mp_context,
+ from vllm.v1.executor.abstract import Executor, FailureCallback
+ from vllm.v1.outputs import ModelRunnerOutput
+ from vllm.worker.worker_base import WorkerWrapperBase
++from vllm.coldstart_utils import create_profiler, fork_profiler, get_profiler, get_profiler_names
+ 
+ logger = init_logger(__name__)
+ 
+@@ -324,6 +325,8 @@ class WorkerProc:
+         distributed_init_method: str,
+         input_shm_handle: Handle,
+     ):
++        profiler = fork_profiler(f"tp={rank}") 
++        profiler.mark("enter_worker_proc")
+         self.rank = rank
+         wrapper = WorkerWrapperBase(vllm_config=vllm_config, rpc_rank=rank)
+         # TODO: move `init_worker` to executor level as a collective rpc call
+@@ -354,8 +357,11 @@ class WorkerProc:
+         self.worker_response_mq = MessageQueue(1, 1)
+ 
+         # Initialize device and loads weights
++        profiler.mark(f"before_init_device")
+         self.worker.init_device()
++        profiler.mark(f"after_init_device")
+         self.worker.load_model()
++        profiler.mark(f"after_load_model")
+ 
+     @staticmethod
+     def make_worker_process(
+@@ -365,7 +371,13 @@ class WorkerProc:
+             distributed_init_method: str,
+             input_shm_handle,  # Receive SchedulerOutput
+     ) -> UnreadyWorkerProcHandle:
++        try:
++            profiler = get_profiler()
++        except Exception as e:
++            profiler = create_profiler()
++        profiler.mark(f"make_worker_process")
+         context = get_mp_context()
++
+         # (reader, writer)
+         reader, writer = context.Pipe(duplex=False)
+ 
+-- 
+2.43.0
+

@@ -1,0 +1,18 @@
+#!/bin/bash
+#PBS -l select=1:ngpus=4
+#PBS -l walltime=08:00:00
+#PBS -j oe
+#PBS -N convert_qwen
+#PBS -o ./logs/convert_qwen.log
+
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+module load singularity
+module load cuda
+singularity exec --nv \
+  -B /scratch/users/ntu/$USER/models:/models \
+  -B /scratch/users/ntu/$USER/hugging_face/:/hf_model \
+  /scratch/users/ntu/$USER/sif_images/save_model.sif \
+  python3 /app/save_model.py \
+  --model-name Qwen/Qwen2.5-32B \
+  --local-model-path /hf_model/Qwen/Qwen2.5-32B \
+  --tensor-parallel-size 4

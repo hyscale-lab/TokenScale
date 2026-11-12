@@ -1,0 +1,5 @@
+{
+  "instance_uuid": "a1b2c3d4-5678-90ef-ghij-klmnopqrstuv",
+  "gpu_num_per_node": 1,
+  "node_num": 1
+}
