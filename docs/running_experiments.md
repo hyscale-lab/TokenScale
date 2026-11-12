@@ -66,7 +66,7 @@ export PLATFORM=NSCC_2P
 
 5. Start the entrypoint by:
 ```
-./entrypoint -index_path configs/index.json -sweep_path configs/sweep.json
+./entrypoint -index_path configs/index.json -sweep_path configs/example.json
 ```
 ## Notice About Sweeping
 The "sweep_config" there indicates the configurations that is going to be sweeped during experiment runs

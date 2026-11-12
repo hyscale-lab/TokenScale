@@ -43,6 +43,7 @@ entrypoints/entrypoints
 entrypoints/configs/index.json
 entrypoints/configs/sweep.json
 entrypoints/configs/*.json
+!entrypoints/configs/example.json
 entrypoints/local_configs/*.json
 entrypoints/model_configs
 entrypoints/experiment.json

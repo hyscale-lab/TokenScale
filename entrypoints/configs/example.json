@@ -1,0 +1,32 @@
+{
+    "index.json::model_config_path_list": [
+        [
+            "model_configs/lmcache/Llama-3.1-8B_prefill.json",
+            "model_configs/lmcache/Llama-3.1-8B_decode.json"
+        ]
+    ],
+    "loadgen_configs/loadgen_config.json::trace_file_path": [
+        "/scratch/users/ntu/$USER/traces/conv/sample_0_all_input1_output1_ids.json"
+    ],
+    "loadgen_configs/loadgen_config.json::sampling_rate": [50],
+    "common_configs/common_config.json::wait_min": [12],
+    "common_configs/common_config.json::nscc_nodes": [1],
+    "common_configs/common_config.json::gpu_per_node": [7],
+    "common_configs/common_config.json::route_policy": ["TP"],
+    "model_configs/lmcache/Llama-3.1-8B_prefill.json::autoscaler_config_path": ["autoscale_configs/kpa_autoscale_config.json"],
+    "autoscale_configs/kpa_autoscale_config.json::min_instance": [1],
+    "autoscale_configs/kpa_autoscale_config.json::max_instance": [7],
+    "autoscale_configs/kpa_autoscale_config.json::target_metric": ["tps_counter"],
+    "autoscale_configs/kpa_autoscale_config.json::target_value": [14000],
+    "autoscale_configs/kpa_autoscale_config.json::stabilization_window_seconds": [10],
+    "model_configs/lmcache/Llama-3.1-8B_decode.json::autoscaler_config_path": ["autoscale_configs/cap_autoscale_config.json"],
+    "autoscale_configs/cap_autoscale_config.json::min_instance": [2],
+    "autoscale_configs/cap_autoscale_config.json::max_instance": [2],
+    "autoscale_configs/cap_autoscale_config.json::convert_instance": [1],
+    "autoscale_configs/cap_autoscale_config.json::convert_max_request": [120],
+    "autoscale_configs/cap_autoscale_config.json::stabilization_window_seconds": [10],
+    "pd_configs/pd.json::pd_mode":["lmcache"],
+    "pd_configs/pd.json::lmcache_nixl_send_buffer_size_GB": [2],
+    "pd_configs/pd.json::lmcache_nixl_recv_buffer_size_GB": [2],
+    "common_configs/common_config.json::provision_ratio": [1]
+}

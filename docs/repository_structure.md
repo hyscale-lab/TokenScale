@@ -10,7 +10,7 @@
 | [`liquidlet/`](../liquidlet/) | Per-node agent (Go), entry point `liquidlet/main.go`. Launches and manages vLLM instances. `metrics_patch/` holds the vLLM patches for metrics and cold-start profiling. |
 | [`entrypoints/`](../entrypoints/) | Experiment launcher: `entrypoints/main.go -index_path <index.json> -sweep_path <sweep.json>`. Deploys the router, liquidlets, and load generator, then sweeps configurations. |
 | ├ [`entrypoints/configs/capacity_profiles/`](../entrypoints/configs/capacity_profiles/) | Token Velocity profiles (Table II) for Llama-3.1-8B and Qwen-2.5-32B. |
-| └ [`entrypoints/configs/sweep_{llama,qwen}_*/`](../entrypoints/configs/) | End-to-end experiment configs per model and trace (`conv`, `code`, `mixed`). `tokenpipe.json` = TokenScale |
+| └ [`entrypoints/configs/example.json`](../entrypoints/configs/example.json) | Example sweep config: TokenScale on Llama-3.1-8B with the `conv` trace. |
 | [`pd/`](../pd/) | KV-cache transfer proxies for LMCache and Mooncake. |
 | [`model_save/`](../model_save/), [`preload/`](../preload/) | Convert models to the ServerlessLLM format and preload them into host memory for fast cold starts. |
 | [`usertools/`](../usertools/) | CLI tools and a custom scaler sidecar. |
