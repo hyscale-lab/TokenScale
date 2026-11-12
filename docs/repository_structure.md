@@ -18,3 +18,7 @@
 | [`prometheus/`](../prometheus/), [`analysis/`](../analysis/) | Metrics collection and Grafana-based analysis. |
 | [`tests/`](../tests/) | Integration tests. |
 | `Dockerfile.*` | Container images for the liquidlet (vLLM + LMCache), router, and model saver. |
+
+## Note on Convertible Decoders
+
+The current implementation of Convertible Decoders is a simplified version of the design described in the paper. A fixed number of decoders (`convert_instance` in the autoscaler config) are designated as convertible when they are created. When the incoming prefill token rate exceeds the profiled prefiller capacity, the gateway routes requests to a convertible decoder, which runs both prefill and decode locally without KV-cache transfer.
